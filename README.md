@@ -1,9 +1,9 @@
-# multi-tour-workflow
+# multi-tour-workflow-onboard-tenant
 
-> Business process orchestration (saga)
+> Workflow saga onboard-tenant (identity-audit), with compensations
 
-Part of the **LMS Library** distributed system — team `lms-library`, Grupo 2.
-Governance and documentation live in [`library-docs`](https://github.com/code-corhuila/library-docs).
+Part of the **Multi Tour** distributed system — team `multi-tour`, Grupo 2.
+Governance and documentation live in [`multi-tour-docs`](https://github.com/code-corhuila/multi-tour-docs).
 
 ## Branching
 
@@ -22,4 +22,4 @@ branch into another: `merge develop -> qa` and `merge qa -> main` do not exist i
 `main` requires **1 approval from `ariel5253`**. On `develop` and `qa` the team sets its own review
 rule.
 
-Full policy: `00-governance/branching-policy.md` in `library-docs`.
+Full policy: `00-governance/branching-policy.md` in `multi-tour-docs`.
