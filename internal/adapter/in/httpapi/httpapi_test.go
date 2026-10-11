@@ -407,3 +407,24 @@ func TestC_ThePublicKeyIsReadFromPEMAndMustBeRSA(t *testing.T) {
 		}
 	}
 }
+
+type panickingUseCase struct{ fakeUseCase }
+
+func (panickingUseCase) Get(context.Context, string) (saga.Saga, error) {
+	panic("boom host=db-internal")
+}
+
+func TestC_APanicAnswersTheEnvelopeWithoutLeakingIt(t *testing.T) {
+	var logs bytes.Buffer
+	c := get(t, sagaID)
+	c.corr = "panic-1"
+
+	rec := c.send(newHandler(&panickingUseCase{}, &logs))
+
+	var body struct{ Error, TraceID string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusInternalServerError || body.Error != "INTERNAL_ERROR" || body.TraceID != "panic-1" ||
+		strings.Contains(rec.Body.String(), "db-internal") || !strings.Contains(logs.String(), "panic-1") {
+		t.Errorf("status %d, body %s, log %s", rec.Code, rec.Body, logs.String())
+	}
+}
