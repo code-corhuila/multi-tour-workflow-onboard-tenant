@@ -74,8 +74,7 @@ type request struct {
 }
 
 var (
-	errorCode     = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
-	correlationID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	errorCode = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
 )
 
 // post sends the request and returns the body of an accepted answer. Retries happen only for a network failure,
@@ -87,7 +86,7 @@ func (c *client) post(ctx context.Context, r request) ([]byte, error) {
 		return nil, fmt.Errorf("encode the request: %w", err)
 	}
 	corr := correlation.From(ctx)
-	if !correlationID.MatchString(corr) {
+	if !correlation.Valid(corr) {
 		corr = correlation.NewID()
 	}
 	last := unknown("PARTICIPANT_UNAVAILABLE", "no answer from the participant")
