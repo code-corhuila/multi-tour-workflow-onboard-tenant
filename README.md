@@ -11,7 +11,7 @@ The saga that onboards a tenant (ADR-004 D3): it creates the pending tenant in `
 
 ## How to start it
 
-Not startable yet. When built: `docker compose -f deploy/compose.yml up`, with the variables of `.env.example` and the `SERVICE_TOKEN` issued by the identity service. Entry through the gateway: `POST /api/v1/sagas/onboard-tenant` and `GET /api/v1/sagas/onboard-tenant/{id}` (see `openapi/openapi.yaml`).
+Run the migrator once per environment (see `deploy/compose.yml`), then `docker compose -f deploy/compose.yml up workflow-onboard-tenant`, with the variables of `.env.example` (the compose file maps the secrets from `env/<environment>.env` of `multi-tour-infra-postgres`) and the `SERVICE_TOKEN` issued by the identity service. The service listens on 8080 inside the platform network and publishes no port. Entry through the gateway: `POST /api/v1/sagas/onboard-tenant` and `GET /api/v1/sagas/onboard-tenant/{id}` (see `openapi/openapi.yaml`).
 
 ## Where the data is
 
@@ -23,7 +23,7 @@ In PostgreSQL, schema `workflow_onboard_tenant` of the single instance (ADR-005 
 
 ## What is missing
 
-Everything but the skeleton: the schema (T-02), the tests (T-03), the saga and orchestrator (T-04), the HTTP entry and participants (T-05) and the image and compose (T-06). Today the packages are empty and `openapi/openapi.yaml` is the contract the code will be written against.
+Declared debts: `OnBehalfOf` and the membership id are not persisted, so a resumed saga cannot finish step 3 and ends FAILED for a person; there is no claim on resume, so only one instance may run; the audit actor of the participant calls is the service, because the participant contracts have no field for the person. Not verified end to end against the real participants yet.
 
 ## Branching
 

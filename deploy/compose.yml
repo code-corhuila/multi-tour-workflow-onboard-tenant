@@ -28,6 +28,33 @@ services:
       - update
     networks: [platform]
 
+  # The saga itself. It publishes no port: the api gateway is the only door (norm 5.6.1). Run the migrator first.
+  # The secrets come from env/<environment>.env of multi-tour-infra-postgres; the names inside the container are
+  # those of .env.example.
+  workflow-onboard-tenant:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: multi-tour-workflow-onboard-tenant:0.1.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    environment:
+      LISTEN_ADDR: ":8080"
+      IDENTITY_AUDIT_BASE_URL: ${IDENTITY_AUDIT_BASE_URL:-http://identity-audit-api:8080}
+      SECURITY_BASE_URL: ${SECURITY_BASE_URL:-http://security:8080}
+      SERVICE_TOKEN: ${WORKFLOW_ONBOARD_TENANT_SERVICE_TOKEN:?WORKFLOW_ONBOARD_TENANT_SERVICE_TOKEN is required, set it in env/<environment>.env}
+      JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
+      DATABASE_URL: ${WORKFLOW_ONBOARD_TENANT_DATABASE_URL:?WORKFLOW_ONBOARD_TENANT_DATABASE_URL is required, set it in env/<environment>.env}
+      STEP_TIMEOUT: ${STEP_TIMEOUT:-5s}
+      STEP_ATTEMPTS: ${STEP_ATTEMPTS:-3}
+    volumes:
+      - ${JWT_PUBLIC_KEY_PATH:?JWT_PUBLIC_KEY_PATH is required, set it in env/<environment>.env}:/run/secrets/jwt_public.pem:ro
+    networks: [platform]
+    restart: unless-stopped
+
 networks:
   platform:
     external: true
