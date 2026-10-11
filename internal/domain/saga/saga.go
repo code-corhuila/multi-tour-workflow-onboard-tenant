@@ -28,6 +28,9 @@ const (
 // ErrNotFound is returned by a store when no saga has the requested id.
 var ErrNotFound = errors.New("saga not found")
 
+// ErrEnded is returned by a store when a saga that already ended is saved again: an ended saga never changes.
+var ErrEnded = errors.New("saga already ended")
+
 // ParticipantError is the only error detail a participant may hand to the saga: a code and a message
 // already free of connection strings, tokens and passwords. Any other error is reduced to a generic one.
 type ParticipantError struct {
