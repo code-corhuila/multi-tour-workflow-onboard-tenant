@@ -21,11 +21,12 @@ type OnboardTenant struct {
 	log      *slog.Logger
 	newID    func() string
 	now      func() time.Time
+	bound    time.Duration // longest a started saga may run, independent of the caller
 }
 
 func NewOnboardTenant(store out.Store, identity out.IdentityAudit, security out.Security,
-	log *slog.Logger, newID func() string, now func() time.Time) *OnboardTenant {
-	return &OnboardTenant{store, identity, security, log, newID, now}
+	log *slog.Logger, newID func() string, now func() time.Time, bound time.Duration) *OnboardTenant {
+	return &OnboardTenant{store, identity, security, log, newID, now, bound}
 }
 
 var _ in.OnboardTenant = (*OnboardTenant)(nil)

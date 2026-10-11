@@ -32,6 +32,9 @@ var ErrNotFound = errors.New("saga not found")
 type ParticipantError struct {
 	Code    string
 	Message string
+	// Definitive is true only for a clear rejection (a 4xx): the participant did not do the work.
+	// Anything else (timeout, lost answer, unknown) leaves the outcome unknown.
+	Definitive bool
 }
 
 func (e *ParticipantError) Error() string { return e.Code + ": " + e.Message }

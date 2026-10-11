@@ -40,7 +40,10 @@ func (f *fakeStore) put(s saga.Saga) {
 
 func (f *fakeStore) latest() saga.Saga { return f.snapshots[len(f.snapshots)-1] }
 
-func (f *fakeStore) Create(_ context.Context, s saga.Saga) (saga.Saga, bool, error) {
+func (f *fakeStore) Create(ctx context.Context, s saga.Saga) (saga.Saga, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return saga.Saga{}, false, err
+	}
 	for _, existing := range f.byID {
 		if existing.IdempotencyKey == s.IdempotencyKey {
 			return copySaga(existing), false, nil
@@ -50,7 +53,13 @@ func (f *fakeStore) Create(_ context.Context, s saga.Saga) (saga.Saga, bool, err
 	return copySaga(s), true, nil
 }
 
-func (f *fakeStore) Save(_ context.Context, s saga.Saga) error { f.put(s); return nil }
+func (f *fakeStore) Save(ctx context.Context, s saga.Saga) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.put(s)
+	return nil
+}
 
 func (f *fakeStore) Get(_ context.Context, id string) (saga.Saga, error) {
 	s, ok := f.byID[id]
@@ -79,20 +88,29 @@ type fakeIdentity struct {
 	atComplete                     saga.Saga
 }
 
-func (f *fakeIdentity) RegisterPendingTenant(_ context.Context, c out.Call, _ saga.TenantData) (string, error) {
+func (f *fakeIdentity) RegisterPendingTenant(ctx context.Context, c out.Call, _ saga.TenantData) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	*f.order = append(*f.order, "register")
 	f.calls = append(f.calls, c)
 	return "tenant-1", f.registerErr
 }
 
-func (f *fakeIdentity) CompleteOnboarding(_ context.Context, c out.Call, _, _, _ string) error {
+func (f *fakeIdentity) CompleteOnboarding(ctx context.Context, c out.Call, _, _, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	*f.order = append(*f.order, "complete")
 	f.calls = append(f.calls, c)
 	f.atComplete = f.store.latest()
 	return f.completeErr
 }
 
-func (f *fakeIdentity) FailOnboarding(_ context.Context, c out.Call, _ string, step saga.Step) error {
+func (f *fakeIdentity) FailOnboarding(ctx context.Context, c out.Call, _ string, step saga.Step) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	*f.order = append(*f.order, "fail-onboarding")
 	f.calls = append(f.calls, c)
 	f.failedStep = step
@@ -105,9 +123,16 @@ type fakeSecurity struct {
 	calls  []out.Call
 	err    error
 	atCall saga.Saga
+	hook   func() // runs inside the call, e.g. to cancel the caller's context
 }
 
-func (f *fakeSecurity) CreateFirstAdministrator(_ context.Context, c out.Call, _ string, _ saga.Administrator) (string, error) {
+func (f *fakeSecurity) CreateFirstAdministrator(ctx context.Context, c out.Call, _ string, _ saga.Administrator) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if f.hook != nil {
+		f.hook()
+	}
 	*f.order = append(*f.order, "create-administrator")
 	f.calls = append(f.calls, c)
 	f.atCall = f.store.latest()
@@ -134,7 +159,7 @@ func newHarness() *harness {
 	h.uc = usecase.NewOnboardTenant(store, h.identity, h.security,
 		slog.New(slog.NewTextHandler(logs, nil)),
 		func() string { n++; return fmt.Sprintf("saga-%d", n) },
-		func() time.Time { return t0 })
+		func() time.Time { return t0 }, time.Minute)
 	return h
 }
 
@@ -147,7 +172,7 @@ func command(key string) in.StartCommand {
 }
 
 func rejected() error {
-	return &saga.ParticipantError{Code: "BUSINESS_RULE_VIOLATION", Message: "email already has an account"}
+	return &saga.ParticipantError{Code: "BUSINESS_RULE_VIOLATION", Message: "email already has an account", Definitive: true}
 }
 
 func steps(s saga.Saga) []saga.Step {
@@ -201,6 +226,15 @@ func TestA_step_two_failure_compensates_step_one(t *testing.T) {
 	if len(s.Steps) != 1 || !s.Steps[0].Compensated {
 		t.Errorf("steps = %+v, want step 1 compensated", s.Steps)
 	}
+	savedWhileRunning := false
+	for _, snapshot := range h.store.snapshots {
+		if snapshot.Status == saga.Running && len(snapshot.Steps) == 1 && snapshot.Steps[0].Compensated {
+			savedWhileRunning = true
+		}
+	}
+	if !savedWhileRunning {
+		t.Error("the compensation must be saved right after it ran, before the saga ends")
+	}
 }
 
 func TestA_failed_compensation_ends_failed(t *testing.T) {
@@ -213,6 +247,12 @@ func TestA_failed_compensation_ends_failed(t *testing.T) {
 	}
 	if s.Steps[0].Compensated {
 		t.Error("step 1 must not be marked compensated when its undo failed")
+	}
+	if !strings.Contains(s.FailureDetail, "; compensation of CREATE_TENANT failed: UNKNOWN") {
+		t.Errorf("failure detail = %q, want the failed compensation named", s.FailureDetail)
+	}
+	if logs := h.logs.String(); !strings.Contains(logs, "sagaId=saga-1") || !strings.Contains(logs, "CREATE_TENANT") || strings.Contains(logs, "unreachable") {
+		t.Errorf("the failed compensation must be logged, sanitized, with saga and step: %s", logs)
 	}
 }
 
@@ -298,5 +338,128 @@ func TestC_repeated_start_returns_same_saga_and_runs_nothing(t *testing.T) {
 	}
 	if len(*h.order) != calls {
 		t.Errorf("the repeat ran steps: %v", *h.order)
+	}
+}
+
+func unknown() error { return &saga.ParticipantError{Code: "TIMEOUT", Message: "no answer"} }
+
+func TestA_unknown_outcome_at_step_two_ends_failed_without_compensating(t *testing.T) {
+	for name, cause := range map[string]error{"timeout": unknown(), "plain error": errors.New("connection reset")} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			h.security.err = cause
+			s := mustStart(t, h, "key-00000001")
+			if s.Status != saga.Failed || s.FailedStep != saga.CreateAdministrator {
+				t.Errorf("status %s, failedStep %s", s.Status, s.FailedStep)
+			}
+			if got, want := *h.order, []string{"register", "create-administrator"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("calls = %v, want %v: the account may exist, step 1 must stay", got, want)
+			}
+		})
+	}
+}
+
+func TestA_unknown_outcome_at_step_one_ends_failed(t *testing.T) {
+	h := newHarness()
+	h.identity.registerErr = unknown()
+	s := mustStart(t, h, "key-00000001")
+	if s.Status != saga.Failed || s.FailedStep != saga.CreateTenant {
+		t.Errorf("status %s, failedStep %s", s.Status, s.FailedStep)
+	}
+}
+
+func TestA_definitive_rejection_at_step_one_ends_compensated(t *testing.T) {
+	h := newHarness()
+	h.identity.registerErr = rejected()
+	s := mustStart(t, h, "key-00000001")
+	if s.Status != saga.Compensated || s.FailedStep != saga.CreateTenant {
+		t.Errorf("status %s, failedStep %s", s.Status, s.FailedStep)
+	}
+}
+
+func TestA_cancelled_caller_does_not_stop_the_compensation(t *testing.T) {
+	h := newHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	h.security.err = rejected()
+	h.security.hook = cancel
+	s, _, err := h.uc.Start(ctx, command("key-00000001"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if s.Status != saga.Compensated || h.store.latest().Status != saga.Compensated {
+		t.Errorf("status %s, stored %s: the caller leaving must not cancel the saga", s.Status, h.store.latest().Status)
+	}
+}
+
+func TestA_resume_of_a_saga_with_step_three_done_completes_it(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator, saga.RecordAdministrator))
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if s, _ := h.store.Get(context.Background(), "saga-9"); s.Status != saga.Completed || len(*h.order) != 0 {
+		t.Errorf("status %s, calls %v", s.Status, *h.order)
+	}
+}
+
+func TestA_resume_of_a_saga_with_step_two_done_ends_failed(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	s, _ := h.store.Get(context.Background(), "saga-9")
+	if s.Status != saga.Failed || s.FailedStep != saga.RecordAdministrator || !strings.HasPrefix(s.FailureDetail, "RESTARTED") || len(*h.order) != 0 {
+		t.Errorf("saga %+v, calls %v", s, *h.order)
+	}
+}
+
+func TestA_second_resume_over_a_compensated_saga_does_nothing(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant))
+	for i := 0; i < 2; i++ {
+		if err := h.uc.Resume(context.Background(), t0); err != nil {
+			t.Fatalf("Resume %d: %v", i, err)
+		}
+	}
+	if got, want := *h.order, []string{"fail-onboarding"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %v, want one compensation", got)
+	}
+}
+
+func TestA_rerun_skips_steps_already_compensated(t *testing.T) {
+	h := newHarness()
+	s := staleSaga(saga.CreateTenant)
+	s.Steps[0].Compensated = true
+	h.store.put(s)
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got, _ := h.store.Get(context.Background(), "saga-9"); got.Status != saga.Compensated || len(*h.order) != 0 {
+		t.Errorf("status %s, calls %v: nothing should be undone twice", got.Status, *h.order)
+	}
+}
+
+func staleSaga(done ...saga.Step) saga.Saga {
+	s := saga.Saga{ID: "saga-9", IdempotencyKey: "key-00000009", Status: saga.Running, TenantID: "tenant-9",
+		CreatedAt: t0.Add(-time.Hour), UpdatedAt: t0.Add(-time.Hour)}
+	for _, step := range done {
+		s.Record(step)
+	}
+	return s
+}
+
+func TestC_administrator_never_shows_its_password(t *testing.T) {
+	admin := saga.Administrator{FullName: "Ana Perez", Email: "ana@example.test", Password: password}
+	wrapped := saga.Onboarding{Administrator: admin}
+	var logs bytes.Buffer
+	slog.New(slog.NewTextHandler(&logs, nil)).Info("start", "admin", admin, "onboarding", wrapped)
+	for name, shown := range map[string]string{
+		"%v": fmt.Sprintf("%v", admin), "%+v": fmt.Sprintf("%+v", admin), "%#v": fmt.Sprintf("%#v", admin),
+		"%+v nested": fmt.Sprintf("%+v", wrapped), "slog": logs.String(),
+	} {
+		if strings.Contains(shown, password) {
+			t.Errorf("%s shows the password: %s", name, shown)
+		}
 	}
 }
