@@ -422,3 +422,80 @@ func TestC_ThePasswordNeverLeavesInAnError(t *testing.T) {
 		t.Errorf("error %v leaks the password", err)
 	}
 }
+
+// complete-onboarding and fail-onboarding take no Idempotency-Key in the contract: after a lost answer the retry meets
+// the state the first attempt already set and is refused with 422, which proves nothing about the first attempt.
+func TestC_A422OnARetryOfAStateChangeLeavesTheOutcomeUnknown(t *testing.T) {
+	for _, name := range []string{"complete", "fail"} {
+		rec := contractServer(t,
+			reply{status: 503, body: errorBody("SERVICE_UNAVAILABLE", "x"), raw: true},
+			reply{status: 422, body: errorBody("INVALID_STATUS_TRANSITION", "the tenant is not pending")})
+
+		err := operations[name](context.Background(), rec.URL)
+
+		var participant *saga.ParticipantError
+		if !errors.As(err, &participant) || participant.Definitive {
+			t.Errorf("%s: got %v, want a participant error that is not definitive", name, err)
+		}
+	}
+}
+
+func TestC_ARedirectIsNeverFollowedAndLeavesTheOutcomeUnknown(t *testing.T) {
+	target := contractServer(t, reply{status: 201, body: tenantBody})
+	redirector := httptest.NewServer(http.RedirectHandler(target.URL+"/api/v1/identity-audit/internal/tenants", http.StatusTemporaryRedirect))
+	defer redirector.Close()
+	ia, _ := identityAt(redirector.URL)
+
+	_, err := ia.RegisterPendingTenant(context.Background(), call, tenant)
+
+	var participant *saga.ParticipantError
+	if !errors.As(err, &participant) || participant.Definitive || len(target.requests()) != 0 {
+		t.Errorf("err %v, target requests %d: want an unknown outcome and the redirect not followed", err, len(target.requests()))
+	}
+}
+
+func TestC_AMalformedCorrelationIdIsReplacedNotSent(t *testing.T) {
+	rec := contractServer(t, reply{status: 201, body: tenantBody})
+	ia, _ := identityAt(rec.URL)
+
+	_, err := ia.RegisterPendingTenant(correlation.With(context.Background(), "bad\r\nX-Evil: 1"), call, tenant)
+
+	got := rec.requests()
+	if err != nil || len(got) != 1 || got[0].corr == "" || strings.ContainsAny(got[0].corr, "\r\n ") {
+		t.Errorf("err %v, requests %+v", err, got)
+	}
+}
+
+func TestC_ARequestTimeoutAnswerIsRetriedAndLeavesTheOutcomeUnknown(t *testing.T) {
+	for _, status := range []int{408, 425} {
+		rec := contractServer(t, reply{status: status, body: errorBody("TIMEOUT", "x"), raw: true})
+
+		err := operations["register"](context.Background(), rec.URL)
+
+		var participant *saga.ParticipantError
+		if !errors.As(err, &participant) || participant.Definitive || len(rec.requests()) != testConfig().Attempts {
+			t.Errorf("%d: err %v, requests %d", status, err, len(rec.requests()))
+		}
+	}
+}
+
+func TestC_ThePasswordCannotSurviveAsAPrefixCutByTheMessageLimit(t *testing.T) {
+	message := strings.Repeat("a", maxMessageRunes-3) + password
+	rec := contractServer(t, reply{status: 422, body: errorBody("BUSINESS_RULE_VIOLATION", message)})
+	sec, _ := securityAt(rec.URL)
+
+	_, err := sec.CreateFirstAdministrator(context.Background(), call, tenantUUID, admin)
+
+	if err == nil || strings.Contains(err.Error(), password[:3]) {
+		t.Errorf("error %v keeps part of the password", err)
+	}
+}
+
+func TestC_AnEmptyConfigStillMakesACall(t *testing.T) {
+	rec := contractServer(t, reply{status: 201, body: tenantBody})
+	ia := NewIdentityAudit(rec.URL, Config{Token: serviceToken})
+
+	if _, err := ia.RegisterPendingTenant(context.Background(), call, tenant); err != nil {
+		t.Errorf("got %v", err)
+	}
+}
