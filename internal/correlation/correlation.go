@@ -6,9 +6,15 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"regexp"
 )
 
 type key struct{}
+
+var valid = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// Valid says whether id is safe to put in a header and a log line: letters, digits, dot, underscore and hyphen.
+func Valid(id string) bool { return valid.MatchString(id) }
 
 func With(ctx context.Context, id string) context.Context { return context.WithValue(ctx, key{}, id) }
 
