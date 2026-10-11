@@ -378,7 +378,7 @@ func TestC_ASlowParticipantIsCutAtTheStepTimeout(t *testing.T) {
 		mu.Unlock()
 		select {
 		case <-r.Context().Done():
-		case <-time.After(2 * time.Second):
+		case <-time.After(300 * time.Millisecond):
 		}
 	}))
 	defer slow.Close()
