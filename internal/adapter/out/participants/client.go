@@ -21,6 +21,7 @@ const (
 	maxMessageRunes = 200
 	maxReplyBytes   = 1 << 20
 	maxBackoff      = 30 * time.Second
+	defaultTimeout  = 5 * time.Second
 )
 
 // Config bounds every participant call (ADR-004 D10).
@@ -40,7 +41,13 @@ type client struct {
 
 func newClient(baseURL string, cfg Config) *client {
 	cfg.Attempts = max(cfg.Attempts, 1)
-	return &client{baseURL: strings.TrimRight(baseURL, "/"), cfg: cfg, http: &http.Client{}, sleep: sleepFor}
+	cfg.BaseDelay = max(cfg.BaseDelay, 0)
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultTimeout
+	}
+	// A redirect would replay the body (with the password) and the credential elsewhere: it is an unknown outcome.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &client{baseURL: strings.TrimRight(baseURL, "/"), cfg: cfg, http: &http.Client{CheckRedirect: noRedirect}, sleep: sleepFor}
 }
 
 func sleepFor(ctx context.Context, d time.Duration) error {
@@ -61,9 +68,15 @@ type request struct {
 	body    any
 	ok      []int
 	secrets []string
+	// stateChange marks a route without Idempotency-Key whose only refusal is a 422 on the state: a 422 on a
+	// retry may be the first attempt's own effect, so it proves nothing.
+	stateChange bool
 }
 
-var errorCode = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
+var (
+	errorCode     = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
+	correlationID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+)
 
 // post sends the request and returns the body of an accepted answer. Retries happen only for a network failure,
 // 429 and 5xx, with full jitter; what is left after the last attempt is an unknown outcome, because the
@@ -74,7 +87,7 @@ func (c *client) post(ctx context.Context, r request) ([]byte, error) {
 		return nil, fmt.Errorf("encode the request: %w", err)
 	}
 	corr := correlation.From(ctx)
-	if corr == "" {
+	if !correlationID.MatchString(corr) {
 		corr = correlation.NewID()
 	}
 	last := unknown("PARTICIPANT_UNAVAILABLE", "no answer from the participant")
@@ -91,7 +104,9 @@ func (c *client) post(ctx context.Context, r request) ([]byte, error) {
 			last = unknown("PARTICIPANT_UNAVAILABLE", "no answer from the participant")
 		case slices.Contains(r.ok, status):
 			return body, nil
-		case status == http.StatusTooManyRequests || status >= 500:
+		case attempt > 1 && r.stateChange && status == http.StatusUnprocessableEntity:
+			return nil, unknown("UNKNOWN_OUTCOME", "refused on a retry, the first attempt may have been applied")
+		case transient(status):
 			last = unknown("PARTICIPANT_UNAVAILABLE", fmt.Sprintf("the participant answered %d", status))
 		default:
 			return nil, answer(status, body, r.secrets)
@@ -101,6 +116,11 @@ func (c *client) post(ctx context.Context, r request) ([]byte, error) {
 		}
 	}
 	return nil, last
+}
+
+// transient is an answer that says nothing about whether the work was done.
+func transient(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusRequestTimeout || status == http.StatusTooEarly || status >= 500
 }
 
 func (c *client) once(ctx context.Context, r request, payload []byte, corr string) (int, []byte, error) {
@@ -141,13 +161,13 @@ func answer(status int, body []byte, secrets []string) *saga.ParticipantError {
 		code = fmt.Sprintf("HTTP_%d", status)
 	}
 	message := envelope.Message
-	if r := []rune(message); len(r) > maxMessageRunes {
-		message = string(r[:maxMessageRunes])
-	}
 	for _, secret := range secrets {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "***")
 		}
+	}
+	if r := []rune(message); len(r) > maxMessageRunes {
+		message = string(r[:maxMessageRunes])
 	}
 	return &saga.ParticipantError{Code: code, Message: message, Definitive: true}
 }

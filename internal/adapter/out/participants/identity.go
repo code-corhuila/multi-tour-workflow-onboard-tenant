@@ -41,10 +41,11 @@ func (i *IdentityAudit) RegisterPendingTenant(ctx context.Context, call out.Call
 
 func (i *IdentityAudit) CompleteOnboarding(ctx context.Context, call out.Call, tenantID, membershipID, initialStatus string) error {
 	_, err := i.c.post(ctx, request{
-		path: identityPrefix + "/" + url.PathEscape(tenantID) + "/complete-onboarding",
-		key:  call.Key,
-		body: map[string]string{"firstAdministratorMembershipId": membershipID, "initialStatus": initialStatus},
-		ok:   []int{http.StatusOK},
+		path:        identityPrefix + "/" + url.PathEscape(tenantID) + "/complete-onboarding",
+		key:         call.Key,
+		body:        map[string]string{"firstAdministratorMembershipId": membershipID, "initialStatus": initialStatus},
+		ok:          []int{http.StatusOK},
+		stateChange: true,
 	})
 	return err
 }
@@ -55,10 +56,11 @@ func (i *IdentityAudit) FailOnboarding(ctx context.Context, call out.Call, tenan
 		return errors.New("identity-audit has no name for the step " + string(failedStep))
 	}
 	_, err := i.c.post(ctx, request{
-		path: identityPrefix + "/" + url.PathEscape(tenantID) + "/fail-onboarding",
-		key:  call.Key,
-		body: map[string]string{"failedStep": name},
-		ok:   []int{http.StatusOK},
+		path:        identityPrefix + "/" + url.PathEscape(tenantID) + "/fail-onboarding",
+		key:         call.Key,
+		body:        map[string]string{"failedStep": name},
+		ok:          []int{http.StatusOK},
+		stateChange: true,
 	})
 	return err
 }
