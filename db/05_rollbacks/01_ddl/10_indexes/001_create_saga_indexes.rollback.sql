@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS workflow_onboard_tenant.idx_onboard_tenant_saga_status_updated_at;
