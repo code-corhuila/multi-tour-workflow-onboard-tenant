@@ -1,7 +1,7 @@
 #!/bin/sh
-# I·db_ci_builds_reruns_rolls_back_and_rebuilds and I·workflow_app_writes_only_its_schema.
+# I·db_ci_builds_reruns_rolls_back_and_rebuilds and I·workflow_onboard_tenant_app_writes_only_its_schema.
 #
-# Builds the workflow schema from an EMPTY PostgreSQL, applies the migrations a second time (zero
+# Builds the workflow_onboard_tenant schema from an EMPTY PostgreSQL, applies the migrations a second time (zero
 # changes), rolls everything back (empty again) and applies them once more (Annex A, db-ci; Annex J,
 # J.6 and J.10). It starts its own throwaway PostgreSQL and Liquibase containers on a private network,
 # with passwords generated now, so it touches nothing else and writes no secret. Docker is the only
@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.." || exit 1
 export MSYS_NO_PATHCONV=1
 
 POSTGRES_IMAGE="postgres:18.6-alpine"
-RUN_ID="workflow-dbci-$$"
+RUN_ID="wfl-onboard-dbci-$$"
 # the same image the runner of deploy/compose.yml uses: Liquibase plus the PostgreSQL driver
 LIQUIBASE_IMAGE="$RUN_ID-liquibase"
 DB="multitour_test"
@@ -37,8 +37,8 @@ lb() {
     -e LIQUIBASE_COMMAND_URL="jdbc:postgresql://$RUN_ID:5432/$DB" \
     -e LIQUIBASE_COMMAND_USERNAME=postgres -e LIQUIBASE_COMMAND_PASSWORD="$ADMIN_PASSWORD" \
     "$LIQUIBASE_IMAGE" --search-path=/workspace --changelog-file=changelog/changelog-master.yaml \
-    --database-changelog-table-name=databasechangelog_workflow \
-    --database-changelog-lock-table-name=databasechangeloglock_workflow "$@"
+    --database-changelog-table-name=databasechangelog_workflow_onboard_tenant \
+    --database-changelog-lock-table-name=databasechangeloglock_workflow_onboard_tenant "$@"
 }
 
 check() { # name, then the command that must succeed
@@ -52,36 +52,36 @@ check() { # name, then the command that must succeed
   fi
 }
 
-# The schemas where workflow_app can write, by the privilege query of J.10: only its own may appear
+# The schemas where workflow_onboard_tenant_app can write, by the privilege query of J.10: only its own may appear
 writable_schemas() {
   psql_admin -c "SELECT string_agg(DISTINCT table_schema, ',' ORDER BY table_schema) FROM information_schema.tables
     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-      AND has_table_privilege('workflow_app', format('%I.%I', table_schema, table_name), 'INSERT,UPDATE,DELETE')"
+      AND has_table_privilege('workflow_onboard_tenant_app', format('%I.%I', table_schema, table_name), 'INSERT,UPDATE,DELETE')"
 }
 
 # A positive control first: the check must SEE a write privilege when one exists, or it would pass
 # only because the other schema is out of reach. The grant is revoked right after.
 writes_only_its_schema() {
-  psql_admin -c "GRANT INSERT ON other_domain.probe TO workflow_app" >/dev/null || return 1
+  psql_admin -c "GRANT INSERT ON other_domain.probe TO workflow_onboard_tenant_app" >/dev/null || return 1
   seen=$(writable_schemas)
-  psql_admin -c "REVOKE INSERT ON other_domain.probe FROM workflow_app" >/dev/null || return 1
-  [ "$seen" = "other_domain,workflow" ] || { echo "the privilege query did not see a granted write: '$seen'"; return 1; }
-  [ "$(writable_schemas)" = "workflow" ] || { echo "workflow_app can write in: $(writable_schemas)"; return 1; }
-  [ "$(psql_admin -c "SELECT has_schema_privilege('workflow_app', 'public', 'CREATE')")" = "f" ] || { echo "workflow_app can create in public"; return 1; }
-  [ "$(psql_admin -c "SELECT has_schema_privilege('workflow_app', 'workflow', 'CREATE')")" = "f" ] || { echo "workflow_app can create objects in workflow"; return 1; }
+  psql_admin -c "REVOKE INSERT ON other_domain.probe FROM workflow_onboard_tenant_app" >/dev/null || return 1
+  [ "$seen" = "other_domain,workflow_onboard_tenant" ] || { echo "the privilege query did not see a granted write: '$seen'"; return 1; }
+  [ "$(writable_schemas)" = "workflow_onboard_tenant" ] || { echo "workflow_onboard_tenant_app can write in: $(writable_schemas)"; return 1; }
+  [ "$(psql_admin -c "SELECT has_schema_privilege('workflow_onboard_tenant_app', 'public', 'CREATE')")" = "f" ] || { echo "workflow_onboard_tenant_app can create in public"; return 1; }
+  [ "$(psql_admin -c "SELECT has_schema_privilege('workflow_onboard_tenant_app', 'workflow_onboard_tenant', 'CREATE')")" = "f" ] || { echo "workflow_onboard_tenant_app can create objects in workflow_onboard_tenant"; return 1; }
 }
 
 # Its own control table, login-less roles without a password, and the grant of the writer role to the instance user
 owns_its_control_table_and_roles() {
-  [ "$(psql_admin -c "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('databasechangelog_workflow', 'databasechangeloglock_workflow')")" = 2 ] || { echo "the control tables with the workflow suffix are missing"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('databasechangelog_workflow_onboard_tenant', 'databasechangeloglock_workflow_onboard_tenant')")" = 2 ] || { echo "the control tables with the workflow suffix are missing"; return 1; }
   [ "$(psql_admin -c "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('databasechangelog', 'databasechangeloglock')")" = 0 ] || { echo "a default-named control table exists, two domains would share it"; return 1; }
-  [ "$(psql_admin -c "SELECT count(*) FROM pg_authid WHERE rolname IN ('workflow_reader', 'workflow_writer') AND NOT rolcanlogin AND rolpassword IS NULL")" = 2 ] || { echo "the roles must be NOLOGIN and have no password"; return 1; }
-  [ "$(psql_admin -c "SELECT pg_has_role('workflow_app', 'workflow_writer', 'MEMBER')")" = "t" ] || { echo "workflow_app is not a member of workflow_writer"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM pg_authid WHERE rolname IN ('workflow_onboard_tenant_reader', 'workflow_onboard_tenant_writer') AND NOT rolcanlogin AND rolpassword IS NULL")" = 2 ] || { echo "the roles must be NOLOGIN and have no password"; return 1; }
+  [ "$(psql_admin -c "SELECT pg_has_role('workflow_onboard_tenant_app', 'workflow_onboard_tenant_writer', 'MEMBER')")" = "t" ] || { echo "workflow_onboard_tenant_app is not a member of workflow_onboard_tenant_writer"; return 1; }
 }
 
 # The state of the control table, so a second update that applied anything shows as a difference
 changelog_state() {
-  psql_admin -c "SELECT count(*) || ':' || coalesce(md5(string_agg(id || md5sum, ',' ORDER BY orderexecuted)), '') FROM databasechangelog_workflow"
+  psql_admin -c "SELECT count(*) || ':' || coalesce(md5(string_agg(id || md5sum, ',' ORDER BY orderexecuted)), '') FROM databasechangelog_workflow_onboard_tenant"
 }
 
 second_update_changes_nothing() {
@@ -93,13 +93,21 @@ second_update_changes_nothing() {
 
 rolled_back_to_empty() {
   lb rollback-count 999 >/dev/null 2>&1 || { echo "rollback-count 999 failed"; return 1; }
-  [ "$(psql_admin -c "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'workflow'")" = 0 ] || { echo "the schema workflow is still there"; return 1; }
-  [ "$(psql_admin -c "SELECT count(*) FROM pg_roles WHERE rolname IN ('workflow_reader', 'workflow_writer')")" = 0 ] || { echo "a workflow role is still there"; return 1; }
-  [ "$(psql_admin -c "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'workflow_app'")" = 0 ] || { echo "workflow_app is still a member of a role"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'workflow_onboard_tenant'")" = 0 ] || { echo "the schema workflow_onboard_tenant is still there"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM pg_roles WHERE rolname IN ('workflow_onboard_tenant_reader', 'workflow_onboard_tenant_writer')")" = 0 ] || { echo "a workflow role is still there"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'workflow_onboard_tenant_app'")" = 0 ] || { echo "workflow_onboard_tenant_app is still a member of a role"; return 1; }
   [ "$(psql_admin -c "SELECT count(*) FROM pg_default_acl")" = 0 ] || { echo "a default privilege is left behind"; return 1; }
-  [ "$(psql_admin -c "SELECT count(*) FROM databasechangelog_workflow")" = 0 ] || { echo "the control table still lists changesets"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM databasechangelog_workflow_onboard_tenant")" = 0 ] || { echo "the control table still lists changesets"; return 1; }
 }
 
+# Each changeset is idempotent by itself (Annex A): its SQL, applied again over a built schema, fails nowhere
+changesets_apply_twice_without_error() {
+  for d in 01_ddl/01_schemas 01_ddl/03_tables 01_ddl/04_alter 01_ddl/10_indexes 03_dcl/00_roles 03_dcl/01_grants; do
+    for f in db/$d/*.sql; do
+      out=$(docker exec -i -e PGPASSWORD="$ADMIN_PASSWORD" "$RUN_ID" psql -h 127.0.0.1 -U postgres -d "$DB" -v ON_ERROR_STOP=1 -q < "$f" 2>&1) || { echo "applying $f twice failed: $out"; return 1; }
+    done
+  done
+}
 # ---- the probes of the saga tables (HU-WFL-001, task T-02): what the engine refuses
 S1=00000000-0000-4000-8000-0000000000a1
 S2=00000000-0000-4000-8000-0000000000a2
@@ -112,12 +120,12 @@ refused() { # fragment, statement
   out=$(psql_admin -c "$2" 2>&1) && { echo "the database accepted: $2"; return 1; }
   printf '%s' "$out" | grep -q "$1" || { echo "refused, but not for the expected reason ($1): $out"; return 1; }
 }
-clean() { psql_admin -c "TRUNCATE workflow.onboard_tenant_saga_step, workflow.onboard_tenant_saga" >/dev/null || { echo "could not clean the tables"; return 1; }; }
+clean() { psql_admin -c "TRUNCATE workflow_onboard_tenant.onboard_tenant_saga_step, workflow_onboard_tenant.onboard_tenant_saga" >/dev/null || { echo "could not clean the tables"; return 1; }; }
 saga() { # id, idempotency key, status, failed step (quoted or NULL)
-  printf "INSERT INTO workflow.onboard_tenant_saga (saga_id, idempotency_key, saga_status, failed_step) VALUES ('%s', '%s', '%s', %s)" "$1" "$2" "${3:-RUNNING}" "${4:-NULL}"
+  printf "INSERT INTO workflow_onboard_tenant.onboard_tenant_saga (saga_id, idempotency_key, saga_status, failed_step) VALUES ('%s', '%s', '%s', %s)" "$1" "$2" "${3:-RUNNING}" "${4:-NULL}"
 }
 step() { # saga id, number, name, status, compensated_at (SQL or NULL)
-  printf "INSERT INTO workflow.onboard_tenant_saga_step (saga_id, step_number, step_name, step_status, compensated_at) VALUES ('%s', %s, '%s', '%s', %s)" "$1" "$2" "$3" "${4:-COMPLETED}" "${5:-NULL}"
+  printf "INSERT INTO workflow_onboard_tenant.onboard_tenant_saga_step (saga_id, step_number, step_name, step_status, compensated_at) VALUES ('%s', %s, '%s', '%s', %s)" "$1" "$2" "$3" "${4:-COMPLETED}" "${5:-NULL}"
 }
 
 idempotency_key_is_unique_and_sized() {
@@ -142,8 +150,8 @@ failed_step_goes_with_a_failed_status_and_a_known_name() {
 }
 failure_detail_is_bounded() {
   clean
-  refused chk_onboard_tenant_saga_failure_detail "INSERT INTO workflow.onboard_tenant_saga (saga_id, idempotency_key, failure_detail) VALUES ('$S1', '$KEY1', repeat('x', 2001))" || return 1
-  psql_admin -c "INSERT INTO workflow.onboard_tenant_saga (saga_id, idempotency_key, failure_detail) VALUES ('$S1', '$KEY1', repeat('x', 2000))" >/dev/null
+  refused chk_onboard_tenant_saga_failure_detail "INSERT INTO workflow_onboard_tenant.onboard_tenant_saga (saga_id, idempotency_key, failure_detail) VALUES ('$S1', '$KEY1', repeat('x', 2001))" || return 1
+  psql_admin -c "INSERT INTO workflow_onboard_tenant.onboard_tenant_saga (saga_id, idempotency_key, failure_detail) VALUES ('$S1', '$KEY1', repeat('x', 2000))" >/dev/null
 }
 a_step_is_recorded_once_with_a_known_name_number_and_status() {
   clean; psql_admin -c "$(saga $S1 $KEY1)" -c "$(step $S1 1 CREATE_TENANT)" >/dev/null || return 1
@@ -157,14 +165,14 @@ a_step_is_recorded_once_with_a_known_name_number_and_status() {
 steps_follow_their_saga() {
   clean; refused fk_onboard_tenant_saga_step_saga "$(step $GHOST 1 CREATE_TENANT)" || return 1
   psql_admin -c "$(saga $S1 $KEY1)" -c "$(step $S1 1 CREATE_TENANT)" -c "$(step $S1 2 CREATE_ADMINISTRATOR)" >/dev/null || return 1
-  psql_admin -c "DELETE FROM workflow.onboard_tenant_saga WHERE saga_id = '$S1'" >/dev/null || return 1
-  [ "$(psql_admin -c "SELECT count(*) FROM workflow.onboard_tenant_saga_step")" = 0 ] || { echo "the steps did not follow their saga"; return 1; }
+  psql_admin -c "DELETE FROM workflow_onboard_tenant.onboard_tenant_saga WHERE saga_id = '$S1'" >/dev/null || return 1
+  [ "$(psql_admin -c "SELECT count(*) FROM workflow_onboard_tenant.onboard_tenant_saga_step")" = 0 ] || { echo "the steps did not follow their saga"; return 1; }
 }
 the_app_user_writes_the_tables_and_the_index_exists() {
   for t in onboard_tenant_saga onboard_tenant_saga_step; do
-    [ "$(psql_admin -c "SELECT has_table_privilege('workflow_app', 'workflow.$t', 'INSERT,UPDATE')")" = t ] || { echo "workflow_app cannot write workflow.$t"; return 1; }
+    [ "$(psql_admin -c "SELECT has_table_privilege('workflow_onboard_tenant_app', 'workflow_onboard_tenant.$t', 'INSERT,UPDATE')")" = t ] || { echo "workflow_onboard_tenant_app cannot write workflow_onboard_tenant.$t"; return 1; }
   done
-  [ "$(psql_admin -c "SELECT count(*) FROM pg_indexes WHERE schemaname = 'workflow' AND indexname = 'idx_onboard_tenant_saga_status_updated_at'")" = 1 ] || { echo "the resumption index is missing"; return 1; }
+  [ "$(psql_admin -c "SELECT count(*) FROM pg_indexes WHERE schemaname = 'workflow_onboard_tenant' AND indexname = 'idx_onboard_tenant_saga_status_updated_at'")" = 1 ] || { echo "the resumption index is missing"; return 1; }
 }
 
 # ---- an empty instance, as multi-tour-infra-postgres leaves it for this domain (J.7)
@@ -177,13 +185,14 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [ "$ready" = 1 ] || { echo "the throwaway PostgreSQL did not start"; exit 1; }
-psql_admin -c "CREATE ROLE workflow_app LOGIN PASSWORD '$APP_PASSWORD'" \
-           -c "ALTER ROLE workflow_app SET search_path = workflow" \
+psql_admin -c "CREATE ROLE workflow_onboard_tenant_app LOGIN PASSWORD '$APP_PASSWORD'" \
+           -c "ALTER ROLE workflow_onboard_tenant_app SET search_path = workflow_onboard_tenant" \
            -c "CREATE SCHEMA other_domain" -c "CREATE TABLE other_domain.probe (id int)" >/dev/null || exit 1
 
 check "I·db_ci_builds_from_empty" lb update
 check "I·db_ci_second_update_changes_nothing" second_update_changes_nothing
-check "I·workflow_app_writes_only_its_schema" writes_only_its_schema
+check "I·changesets_apply_twice_without_error" changesets_apply_twice_without_error
+check "I·workflow_onboard_tenant_app_writes_only_its_schema" writes_only_its_schema
 check "I·owns_its_control_table_and_roles" owns_its_control_table_and_roles
 check "I·idempotency_key_is_unique_and_sized" idempotency_key_is_unique_and_sized
 check "I·status_is_one_of_the_four_states" status_is_one_of_the_four_states
@@ -195,7 +204,7 @@ check "I·the_app_user_writes_the_tables_and_the_index_exists" the_app_user_writ
 clean
 check "I·db_ci_rolls_back_to_empty" rolled_back_to_empty
 check "I·db_ci_rebuilds_after_the_rollback" lb update
-check "I·workflow_app_writes_only_its_schema_after_the_rebuild" writes_only_its_schema
+check "I·workflow_onboard_tenant_app_writes_only_its_schema_after_the_rebuild" writes_only_its_schema
 check "I·owns_its_control_table_and_roles_after_the_rebuild" owns_its_control_table_and_roles
 
 # the single name the spec uses for the whole sequence
