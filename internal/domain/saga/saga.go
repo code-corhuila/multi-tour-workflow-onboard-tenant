@@ -4,6 +4,7 @@ package saga
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -54,6 +55,11 @@ type Administrator struct {
 	Email    string
 	Password string
 }
+
+// String, GoString and LogValue keep the password out of fmt and slog output.
+func (Administrator) String() string       { return "***" }
+func (Administrator) GoString() string     { return "***" }
+func (Administrator) LogValue() slog.Value { return slog.StringValue("***") }
 
 // Onboarding is the request of the Platform Administrator, kept out of the saga state.
 type Onboarding struct {
