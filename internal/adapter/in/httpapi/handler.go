@@ -6,6 +6,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -43,7 +44,20 @@ func New(uc in.OnboardTenant, verifier *Verifier, log *slog.Logger) http.Handler
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "route not found")
 	})
-	return h.withCorrelation(mux)
+	return h.withCorrelation(h.recovering(mux))
+}
+
+// recovering turns a panic below it into the generic 500 envelope, logged under the trace id.
+func (h *handler) recovering(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				h.log.Error("entry route panicked", "traceId", correlation.From(r.Context()), "panic", fmt.Sprint(recovered))
+				writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // withCorrelation reuses a well-formed X-Correlation-Id or generates one, returns it and puts it in the context.
@@ -66,6 +80,7 @@ func (h *handler) authorize(w http.ResponseWriter, r *http.Request) (Claims, boo
 	}
 	claims, err := h.verifier.Verify(strings.TrimSpace(raw))
 	if err != nil {
+		h.log.Debug("token refused", "traceId", correlation.From(r.Context()), "reason", err.Error())
 		return Claims{}, deny(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 	}
 	if !claims.isPlatformAdministrator() {

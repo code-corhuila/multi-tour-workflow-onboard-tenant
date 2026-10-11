@@ -68,8 +68,8 @@ func (v *Verifier) Verify(raw string) (Claims, error) {
 		}
 		claims.Access = text
 	}
-	if raw, present := body["roles"]; present && raw != nil {
-		list, isList := raw.([]any)
+	if listed, present := body["roles"]; present && listed != nil {
+		list, isList := listed.([]any)
 		if !isList {
 			return Claims{}, errMalformedClaim
 		}
