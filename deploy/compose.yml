@@ -30,7 +30,9 @@ services:
 
   # The saga itself. It publishes no port: the api gateway is the only door (norm 5.6.1). Run the migrator first.
   # The secrets come from env/<environment>.env of multi-tour-infra-postgres; the names inside the container are
-  # those of .env.example.
+  # those of .env.example. A variable left empty is refused by the service at start, by name, so the migrator
+  # above can run without them. The public key file must be readable by user 10001 (mode 644: it is public).
+  # stop_grace_period outlasts the saga bound (70 s with the defaults) so a stop lets a running saga finish.
   workflow-onboard-tenant:
     build:
       context: ..
@@ -45,14 +47,15 @@ services:
       LISTEN_ADDR: ":8080"
       IDENTITY_AUDIT_BASE_URL: ${IDENTITY_AUDIT_BASE_URL:-http://identity-audit-api:8080}
       SECURITY_BASE_URL: ${SECURITY_BASE_URL:-http://security:8080}
-      SERVICE_TOKEN: ${WORKFLOW_ONBOARD_TENANT_SERVICE_TOKEN:?WORKFLOW_ONBOARD_TENANT_SERVICE_TOKEN is required, set it in env/<environment>.env}
+      SERVICE_TOKEN: ${WORKFLOW_ONBOARD_TENANT_SERVICE_TOKEN:-}
       JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
-      DATABASE_URL: ${WORKFLOW_ONBOARD_TENANT_DATABASE_URL:?WORKFLOW_ONBOARD_TENANT_DATABASE_URL is required, set it in env/<environment>.env}
+      DATABASE_URL: ${WORKFLOW_ONBOARD_TENANT_DATABASE_URL:-}
       STEP_TIMEOUT: ${STEP_TIMEOUT:-5s}
       STEP_ATTEMPTS: ${STEP_ATTEMPTS:-3}
     volumes:
-      - ${JWT_PUBLIC_KEY_PATH:?JWT_PUBLIC_KEY_PATH is required, set it in env/<environment>.env}:/run/secrets/jwt_public.pem:ro
+      - ${JWT_PUBLIC_KEY_PATH:-/dev/null}:/run/secrets/jwt_public.pem:ro
     networks: [platform]
+    stop_grace_period: 90s
     restart: unless-stopped
 
 networks:

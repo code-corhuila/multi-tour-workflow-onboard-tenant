@@ -20,10 +20,7 @@ import (
 	"github.com/code-corhuila/multi-tour-workflow-onboard-tenant/internal/correlation"
 )
 
-const (
-	shutdownTimeout = 20 * time.Second
-	retryBaseDelay  = 200 * time.Millisecond
-)
+const retryBaseDelay = 200 * time.Millisecond
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -57,17 +54,23 @@ func run(log *slog.Logger) error {
 		participants.NewIdentityAudit(cfg.identityURL, participantCfg), participants.NewSecurity(cfg.securityURL, participantCfg),
 		log, correlation.NewID, time.Now, bound)
 
-	// One instance runs (declared debt F3): at start every saga still RUNNING was left by the previous process.
-	resumeCtx, cancel := context.WithTimeout(ctx, bound)
-	if err := onboard.Resume(resumeCtx, time.Now()); err != nil {
-		log.Error("closing the sagas left running failed", "error", err.Error())
-	}
-	cancel()
-
 	srv := newServer(cfg, httpapi.New(onboard, httpapi.NewVerifier(key), log), bound)
 	serving := make(chan error, 1)
 	go func() { serving <- srv.ListenAndServe() }()
 	log.Info("workflow listening", "addr", cfg.listenAddr)
+
+	// One instance runs (declared debt F3): every saga still RUNNING at this moment was left by the previous process.
+	// It runs after the listener is up, so the health check answers while the participants are still being reached.
+	before := time.Now()
+	resumed := make(chan struct{})
+	go func() {
+		defer close(resumed)
+		resumeCtx, cancel := context.WithTimeout(ctx, bound)
+		defer cancel()
+		if err := onboard.Resume(resumeCtx, before); err != nil {
+			log.Error("closing the sagas left running failed", "error", err.Error())
+		}
+	}()
 
 	select {
 	case err := <-serving:
@@ -75,11 +78,12 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 	}
 	// stop accepting, let the running sagas answer, then close the pool (deferred)
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownGrace(bound))
 	defer cancelShutdown()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-resumed
 	log.Info("workflow stopped")
 	return nil
 }

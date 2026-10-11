@@ -51,9 +51,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	var problems []error
 	refuse := func(name, why string) { problems = append(problems, fmt.Errorf("%s %s", name, why)) }
 
-	for name, value := range map[string]string{"IDENTITY_AUDIT_BASE_URL": cfg.identityURL, "SECURITY_BASE_URL": cfg.securityURL} {
-		if u, err := url.Parse(value); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			refuse(name, "must be an http or https URL")
+	for _, check := range []struct{ name, value string }{{"IDENTITY_AUDIT_BASE_URL", cfg.identityURL}, {"SECURITY_BASE_URL", cfg.securityURL}} {
+		if u, err := url.Parse(check.value); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			refuse(check.name, "must be an http or https URL")
 		}
 	}
 	if cfg.serviceToken == "" {
@@ -95,6 +95,10 @@ func valueOr(value, fallback string) string {
 func sagaBound(cfg config) time.Duration {
 	return time.Duration(callsPerSaga*cfg.stepAttempts)*cfg.stepTimeout + sagaMargin
 }
+
+// shutdownGrace is how long a stop waits for the sagas still running: the saga bound plus a little, so the pool is
+// not closed under a saga that is half way through a step. The container stop period must be longer.
+func shutdownGrace(bound time.Duration) time.Duration { return bound + 5*time.Second }
 
 // newServer declares every limit (Annex C). A saga runs inside the request that starts it, so the write timeout
 // is the saga bound plus a little: a shorter one would cut the answer of a saga that is still correct.
