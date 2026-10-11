@@ -1,0 +1,33 @@
+# The migration runner of the saga schema. It defines no database and no volume: the instance is
+# that of multi-tour-infra-postgres, which includes this file in the root composition (Annex J, J.7).
+# It does not start with `up`; run it once per environment:
+#   docker compose --env-file env/dev.env run --rm workflow-onboard-tenant-db-migrate
+services:
+  workflow-onboard-tenant-db-migrate:
+    # Liquibase 5.0.4 plus the PostgreSQL driver, at exact versions (see liquibase.Dockerfile)
+    build:
+      context: .
+      dockerfile: liquibase.Dockerfile
+    image: multi-tour-workflow-onboard-tenant-liquibase:5.0.4
+    profiles: [tooling]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LIQUIBASE_COMMAND_URL: jdbc:postgresql://postgres:5432/${PG_DATABASE:?PG_DATABASE is required, set it in env/<environment>.env}
+      LIQUIBASE_COMMAND_USERNAME: ${PG_ADMIN_USER:?PG_ADMIN_USER is required, set it in env/<environment>.env}
+      LIQUIBASE_COMMAND_PASSWORD: ${PG_ADMIN_PASSWORD:?PG_ADMIN_PASSWORD is required, set it in env/<environment>.env}
+    volumes:
+      - ../db:/workspace:ro
+    # Own control table, so two domains never share one (Annex J, J.6)
+    command:
+      - --search-path=/workspace
+      - --changelog-file=changelog/changelog-master.yaml
+      - --database-changelog-table-name=databasechangelog_workflow_onboard_tenant
+      - --database-changelog-lock-table-name=databasechangeloglock_workflow_onboard_tenant
+      - update
+    networks: [platform]
+
+networks:
+  platform:
+    external: true
