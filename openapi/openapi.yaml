@@ -1,0 +1,207 @@
+openapi: 3.0.3
+info:
+  title: Multitour saga onboard-tenant
+  version: 0.1.0
+  description: >
+    Entry of the saga that onboards a tenant (ADR-004 D3, plan D-02): the Platform Administrator starts it and reads
+    its state. Both routes are for the Platform Administrator only. Every error uses the single envelope below and
+    never carries the internal detail of a failure; the detail stays in the saga state and the log. The
+    temporary password is read from the request and is never stored, logged or returned.
+paths:
+  /api/v1/sagas/onboard-tenant:
+    post:
+      summary: Start the onboarding of a tenant
+      description: >
+        Repeating the same Idempotency-Key returns the same saga with 200 and runs no step.
+      operationId: startOnboardTenant
+      tags: [Sagas]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartOnboardTenantRequest"
+      responses:
+        "201":
+          description: The saga started
+          headers:
+            Location:
+              description: URL of the saga
+              schema:
+                type: string
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Saga"
+        "200":
+          description: The Idempotency-Key was already used; the existing saga
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Saga"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/v1/sagas/onboard-tenant/{id}:
+    get:
+      summary: Read the state of an onboarding
+      operationId: getOnboardTenant
+      tags: [Sagas]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The saga
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Saga"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  headers:
+    CorrelationId:
+      description: Reused from the request or generated
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error envelope
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    StartOnboardTenantRequest:
+      type: object
+      required: [identifier, commercialName, timeZone, country, initialStatus, administrator]
+      additionalProperties: false
+      properties:
+        identifier:
+          type: string
+          minLength: 3
+          maxLength: 40
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+        commercialName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        timeZone:
+          type: string
+          maxLength: 64
+        country:
+          type: string
+          pattern: '^[A-Z]{2}$'
+        initialStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+        administrator:
+          type: object
+          required: [fullName, email, password]
+          additionalProperties: false
+          properties:
+            fullName:
+              type: string
+              minLength: 1
+              maxLength: 100
+            email:
+              type: string
+              minLength: 3
+              maxLength: 254
+            password:
+              type: string
+              minLength: 8
+              maxLength: 72
+              writeOnly: true
+    Saga:
+      type: object
+      required: [id, status, completedSteps, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [RUNNING, COMPLETED, COMPENSATED, FAILED]
+        completedSteps:
+          type: array
+          items:
+            type: string
+            enum: [CREATE_TENANT, CREATE_ACCOUNT, APPLY_STATUS]
+        failedStep:
+          type: string
+          enum: [CREATE_TENANT, CREATE_ACCOUNT, APPLY_STATUS]
+        tenantId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error, message, traceId]
+      properties:
+        error:
+          type: string
+          enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INTERNAL_ERROR]
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        traceId:
+          type: string
+security:
+  - bearerAuth: []

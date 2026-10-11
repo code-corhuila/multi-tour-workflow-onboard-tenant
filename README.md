@@ -5,6 +5,26 @@
 Part of the **Multi Tour** distributed system — team `multi-tour`, Grupo 2.
 Governance and documentation live in [`multi-tour-docs`](https://github.com/code-corhuila/multi-tour-docs).
 
+## What it is
+
+The saga that onboards a tenant (ADR-004 D3): it creates the pending tenant in `identity-audit`, the first Administrator's account in `multi-tour-security`, and records the Administrator and the initial status, with a compensation for each step. Its state is persisted after every step.
+
+## How to start it
+
+Not startable yet. When built: `docker compose -f deploy/compose.yml up`, with the variables of `.env.example` and the `SERVICE_TOKEN` issued by the identity service. Entry through the gateway: `POST /api/v1/sagas/onboard-tenant` and `GET /api/v1/sagas/onboard-tenant/{id}` (see `openapi/openapi.yaml`).
+
+## Where the data is
+
+In PostgreSQL, schema `workflow_onboard_tenant` of the single instance (ADR-005 E4); its migrations will live in `db/` of this repository. Nothing is stored yet.
+
+## How to test it
+
+`gofmt -l .` must print nothing, then `go vet ./...` and `go test ./...` (Go 1.26). The same three run in `ci.yml` on pull requests to `develop` and `qa`, with a PostgreSQL service for `TEST_DATABASE_URL`.
+
+## What is missing
+
+Everything but the skeleton: the schema (T-02), the tests (T-03), the saga and orchestrator (T-04), the HTTP entry and participants (T-05) and the image and compose (T-06). Today the packages are empty and `openapi/openapi.yaml` is the contract the code will be written against.
+
 ## Branching
 
 Three permanent branches. **None of them accepts a direct commit** — you enter through a child
