@@ -1,9 +1,9 @@
 # The migration runner of the saga schema. It defines no database and no volume: the instance is
 # that of multi-tour-infra-postgres, which includes this file in the root composition (Annex J, J.7).
 # It does not start with `up`; run it once per environment:
-#   docker compose --env-file env/dev.env run --rm workflow-db-migrate
+#   docker compose --env-file env/dev.env run --rm workflow-onboard-tenant-db-migrate
 services:
-  workflow-db-migrate:
+  workflow-onboard-tenant-db-migrate:
     # Liquibase 5.0.4 plus the PostgreSQL driver, at exact versions (see liquibase.Dockerfile)
     build:
       context: .
@@ -23,8 +23,8 @@ services:
     command:
       - --search-path=/workspace
       - --changelog-file=changelog/changelog-master.yaml
-      - --database-changelog-table-name=databasechangelog_workflow
-      - --database-changelog-lock-table-name=databasechangeloglock_workflow
+      - --database-changelog-table-name=databasechangelog_workflow_onboard_tenant
+      - --database-changelog-lock-table-name=databasechangeloglock_workflow_onboard_tenant
       - update
     networks: [platform]
 

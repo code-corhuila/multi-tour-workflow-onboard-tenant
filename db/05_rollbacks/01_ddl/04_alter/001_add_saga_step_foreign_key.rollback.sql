@@ -1,1 +1,1 @@
-ALTER TABLE workflow.onboard_tenant_saga_step DROP CONSTRAINT IF EXISTS fk_onboard_tenant_saga_step_saga;
+ALTER TABLE workflow_onboard_tenant.onboard_tenant_saga_step DROP CONSTRAINT IF EXISTS fk_onboard_tenant_saga_step_saga;
