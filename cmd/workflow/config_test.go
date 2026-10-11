@@ -92,3 +92,22 @@ func TestC_TheServerLimitsAreExplicitAndOutlastTheLongestSaga(t *testing.T) {
 		t.Errorf("bound %v is shorter than four steps with every attempt used", bound)
 	}
 }
+
+// A saga already started must be allowed to finish before the pool closes: the grace period outlasts the bound.
+func TestC_ShutdownWaitsForTheLongestSagaAndTheComposeGraceOutlastsIt(t *testing.T) {
+	cfg, _ := loadConfig(env(nil))
+	bound := sagaBound(cfg)
+
+	if grace := shutdownGrace(bound); grace <= bound {
+		t.Errorf("shutdown grace %v must exceed the saga bound %v", grace, bound)
+	}
+}
+
+func TestC_TheConfigurationErrorsListTheVariablesInAStableOrder(t *testing.T) {
+	_, first := loadConfig(env(map[string]string{"IDENTITY_AUDIT_BASE_URL": "", "SECURITY_BASE_URL": ""}))
+	for i := 0; i < 20; i++ {
+		if _, again := loadConfig(env(map[string]string{"IDENTITY_AUDIT_BASE_URL": "", "SECURITY_BASE_URL": ""})); again.Error() != first.Error() {
+			t.Fatalf("the error order changed: %q then %q", first, again)
+		}
+	}
+}
