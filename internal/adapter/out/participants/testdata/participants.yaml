@@ -1,0 +1,172 @@
+openapi: 3.0.3
+info:
+  title: Participant routes called by the saga onboard-tenant
+  version: 0.1.0
+  description: >
+    Subset of 07-api/contracts/openapi/identity-audit.yaml and security.yaml in multi-tour-docs: only the four
+    internal routes this saga calls, with their schemas copied as published. Re-copy it when those contracts change.
+paths:
+  /api/v1/identity-audit/internal/tenants:
+    post:
+      operationId: registerPendingTenant
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterTenantRequest"
+      responses:
+        "201": {$ref: "#/components/responses/Tenant"}
+        "200": {$ref: "#/components/responses/Tenant"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /api/v1/identity-audit/internal/tenants/{tenantId}/complete-onboarding:
+    post:
+      operationId: completeTenantOnboarding
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteOnboardingRequest"
+      responses:
+        "200": {$ref: "#/components/responses/Tenant"}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /api/v1/identity-audit/internal/tenants/{tenantId}/fail-onboarding:
+    post:
+      operationId: failTenantOnboarding
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FailOnboardingRequest"
+      responses:
+        "200": {$ref: "#/components/responses/Tenant"}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /api/v1/security/internal/tenants/{tenantId}/administrators:
+    post:
+      operationId: createFirstAdministrator
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFirstAdministratorRequest"
+      responses:
+        "201": {$ref: "#/components/responses/Account"}
+        "200": {$ref: "#/components/responses/Account"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 8, maxLength: 128}
+    TenantId:
+      name: tenantId
+      in: path
+      required: true
+      schema: {$ref: "#/components/schemas/UUID"}
+  responses:
+    Tenant:
+      description: The tenant
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/TenantResponse"}
+    Account:
+      description: The account
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AccountResponse"}
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+  schemas:
+    UUID:
+      type: string
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    RegisterTenantRequest:
+      type: object
+      required: [identifier, commercialName, timeZone, country]
+      additionalProperties: false
+      properties:
+        identifier: {type: string, pattern: '^[a-z0-9]+(-[a-z0-9]+)*$', minLength: 3, maxLength: 40}
+        commercialName: {type: string, minLength: 1, maxLength: 120}
+        timeZone: {type: string, maxLength: 64}
+        country: {type: string, pattern: '^[A-Z]{2}$'}
+    CompleteOnboardingRequest:
+      type: object
+      required: [firstAdministratorMembershipId, initialStatus]
+      additionalProperties: false
+      properties:
+        firstAdministratorMembershipId: {$ref: "#/components/schemas/UUID"}
+        initialStatus: {type: string, enum: [ACTIVE, INACTIVE]}
+    FailOnboardingRequest:
+      type: object
+      required: [failedStep]
+      additionalProperties: false
+      properties:
+        failedStep: {type: string, enum: [CREATE_ACCOUNT, APPLY_STATUS]}
+    CreateFirstAdministratorRequest:
+      type: object
+      required: [fullName, email, password]
+      additionalProperties: false
+      properties:
+        fullName: {type: string, minLength: 1, maxLength: 100}
+        email: {type: string, minLength: 3, maxLength: 254}
+        password: {type: string, minLength: 8, maxLength: 72}
+    TenantResponse:
+      type: object
+      required: [tenantId, identifier, commercialName, tenantStatus, timeZone, country, createdAt]
+      properties:
+        tenantId: {$ref: "#/components/schemas/UUID"}
+        identifier: {type: string}
+        commercialName: {type: string}
+        tenantStatus: {type: string, enum: [PENDING, ACTIVE, INACTIVE, FAILED]}
+        timeZone: {type: string}
+        country: {type: string}
+        createdAt: {type: string}
+    AccountResponse:
+      type: object
+      required: [accountId, tenantId, email, roles, accountStatus, emailVerified, createdAt]
+      properties:
+        accountId: {$ref: "#/components/schemas/UUID"}
+        tenantId: {$ref: "#/components/schemas/UUID"}
+        email: {type: string}
+        roles: {type: array, items: {type: string}}
+        accountStatus: {type: string}
+        emailVerified: {type: boolean}
+        createdAt: {type: string}
+    ErrorResponse:
+      type: object
+      required: [error, message, traceId]
+      properties:
+        error: {type: string}
+        message: {type: string}
+        traceId: {type: string}

@@ -1,0 +1,18 @@
+databaseChangeLog:
+  - changeSet:
+      id: onboard-tenant-ddl-alter-001
+      author: Molina211
+      labels: "HU-WFL-001,ddl,alter"
+      comment: "The foreign key inside the schema, with its ON DELETE."
+      changes:
+        - sqlFile:
+            path: 001_add_saga_step_foreign_key.sql
+            relativeToChangelogFile: true
+            splitStatements: false
+            stripComments: false
+      rollback:
+        - sqlFile:
+            path: ../../05_rollbacks/01_ddl/04_alter/001_add_saga_step_foreign_key.rollback.sql
+            relativeToChangelogFile: true
+            splitStatements: false
+            stripComments: false
