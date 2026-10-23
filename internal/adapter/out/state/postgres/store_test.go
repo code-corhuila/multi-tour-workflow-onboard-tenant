@@ -111,6 +111,40 @@ func TestI_CreateRepeatedUnderConcurrencyInsertsOnce(t *testing.T) {
 	}
 }
 
+func TestI_state_keeps_on_behalf_of_membership_and_initial_status_after_each_step(t *testing.T) {
+	s, _ := newStore(t)
+	sg := fresh(1, "key-onboard-0001", t0)
+	sg.OnBehalfOf, sg.InitialStatus = "platform-admin-sub", "INACTIVE"
+	mustCreate(t, s, sg)
+	got, err := s.Get(ctx, sg.ID)
+	if err != nil || got.OnBehalfOf != "platform-admin-sub" || got.InitialStatus != "INACTIVE" || got.MembershipID != "" {
+		t.Fatalf("after Create: %+v, %v", got, err)
+	}
+
+	sg.TenantID, sg.MembershipID = tid1, "00000000-0000-4000-8000-0000000000b2"
+	sg.Record(saga.CreateTenant)
+	sg.Record(saga.CreateAdministrator)
+	sg.UpdatedAt = t0.Add(time.Second)
+	if err := s.Save(ctx, sg); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Get(ctx, sg.ID)
+	if err != nil || got.OnBehalfOf != "platform-admin-sub" || got.InitialStatus != "INACTIVE" || got.MembershipID != sg.MembershipID {
+		t.Errorf("after step 2: %+v, %v", got, err)
+	}
+}
+
+func TestI_a_saga_written_before_the_resume_columns_reads_them_as_empty(t *testing.T) {
+	s, pool := newStore(t)
+	if _, err := pool.Exec(ctx, `INSERT INTO workflow_onboard_tenant.onboard_tenant_saga (saga_id, idempotency_key) VALUES ($1::text::uuid, 'key-onboard-0001')`, sagaID(1)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, sagaID(1))
+	if err != nil || got.OnBehalfOf != "" || got.MembershipID != "" || got.InitialStatus != "" {
+		t.Errorf("Get = %+v, %v", got, err)
+	}
+}
+
 func TestI_SaveWritesTenantFailureAndEveryStepAndGetReadsThemBack(t *testing.T) {
 	s, _ := newStore(t)
 	sg := fresh(1, "key-onboard-0001", t0)

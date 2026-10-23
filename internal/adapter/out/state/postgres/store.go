@@ -26,7 +26,8 @@ const (
 	stepTable = "workflow_onboard_tenant.onboard_tenant_saga_step"
 
 	sagaColumns = `saga_id::text, idempotency_key, saga_status, coalesce(tenant_id::text, ''),
-		coalesce(failed_step, ''), coalesce(failure_detail, ''), created_at, updated_at`
+		coalesce(failed_step, ''), coalesce(failure_detail, ''), created_at, updated_at,
+		coalesce(on_behalf_of, ''), coalesce(membership_id::text, ''), coalesce(initial_status, '')`
 )
 
 var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -34,10 +35,10 @@ var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 // Create inserts the saga as RUNNING. When the idempotency key exists, the insert does nothing and the existing saga is
 // returned with created=false; the engine makes two concurrent callers with one key take turns, so only one inserts.
 func (s *Store) Create(ctx context.Context, sg saga.Saga) (saga.Saga, bool, error) {
-	tag, err := s.pool.Exec(ctx, `INSERT INTO `+sagaTable+` (saga_id, idempotency_key, saga_status, created_at, updated_at)
-		VALUES ($1::text::uuid, $2, 'RUNNING', $3, $4)
+	tag, err := s.pool.Exec(ctx, `INSERT INTO `+sagaTable+` (saga_id, idempotency_key, saga_status, created_at, updated_at, on_behalf_of, initial_status)
+		VALUES ($1::text::uuid, $2, 'RUNNING', $3, $4, nullif($5::text, ''), nullif($6::text, ''))
 		ON CONFLICT ON CONSTRAINT uq_onboard_tenant_saga_idempotency_key DO NOTHING`,
-		sg.ID, sg.IdempotencyKey, sg.CreatedAt, sg.UpdatedAt)
+		sg.ID, sg.IdempotencyKey, sg.CreatedAt, sg.UpdatedAt, sg.OnBehalfOf, sg.InitialStatus)
 	if err != nil {
 		return saga.Saga{}, false, err
 	}
@@ -65,9 +66,10 @@ func (s *Store) Save(ctx context.Context, sg saga.Saga) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx, `UPDATE `+sagaTable+` SET saga_status = $2, tenant_id = nullif($3::text, '')::uuid,
-		failed_step = nullif($4::text, ''), failure_detail = nullif($5::text, ''), updated_at = $6
+		failed_step = nullif($4::text, ''), failure_detail = nullif($5::text, ''), updated_at = $6,
+		membership_id = nullif($7::text, '')::uuid
 		WHERE saga_id = $1::text::uuid AND saga_status = 'RUNNING'`,
-		sg.ID, string(sg.Status), sg.TenantID, string(sg.FailedStep), sg.FailureDetail, sg.UpdatedAt)
+		sg.ID, string(sg.Status), sg.TenantID, string(sg.FailedStep), sg.FailureDetail, sg.UpdatedAt, sg.MembershipID)
 	if err != nil {
 		return err
 	}
@@ -129,7 +131,8 @@ func (s *Store) load(ctx context.Context, where string, args ...any) ([]saga.Sag
 	sagas, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (saga.Saga, error) {
 		var sg saga.Saga
 		var status, failed string
-		err := r.Scan(&sg.ID, &sg.IdempotencyKey, &status, &sg.TenantID, &failed, &sg.FailureDetail, &sg.CreatedAt, &sg.UpdatedAt)
+		err := r.Scan(&sg.ID, &sg.IdempotencyKey, &status, &sg.TenantID, &failed, &sg.FailureDetail, &sg.CreatedAt, &sg.UpdatedAt,
+			&sg.OnBehalfOf, &sg.MembershipID, &sg.InitialStatus)
 		sg.Status, sg.FailedStep = saga.Status(status), saga.Step(failed)
 		return sg, err
 	})
