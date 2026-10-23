@@ -429,6 +429,19 @@ func TestA_resume_of_a_saga_with_step_two_done_finishes_step_three(t *testing.T)
 	}
 }
 
+func TestA_resume_with_step_three_failing_ends_failed_for_a_person_without_undoing_anything(t *testing.T) {
+	h := newHarness()
+	h.identity.completeErr = unknown()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	s, _ := h.store.Get(context.Background(), "saga-9")
+	if s.Status != saga.Failed || s.FailedStep != saga.RecordAdministrator || !reflect.DeepEqual(*h.order, []string{"complete"}) {
+		t.Errorf("saga %+v, calls %v: the account exists, nothing may be undone", s, *h.order)
+	}
+}
+
 func TestA_resume_of_a_legacy_saga_without_saved_data_ends_failed(t *testing.T) {
 	h := newHarness()
 	legacy := staleSaga(saga.CreateTenant, saga.CreateAdministrator)

@@ -134,6 +134,17 @@ func TestI_state_keeps_on_behalf_of_membership_and_initial_status_after_each_ste
 	}
 }
 
+func TestI_a_saga_written_before_the_resume_columns_reads_them_as_empty(t *testing.T) {
+	s, pool := newStore(t)
+	if _, err := pool.Exec(ctx, `INSERT INTO workflow_onboard_tenant.onboard_tenant_saga (saga_id, idempotency_key) VALUES ($1::text::uuid, 'key-onboard-0001')`, sagaID(1)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, sagaID(1))
+	if err != nil || got.OnBehalfOf != "" || got.MembershipID != "" || got.InitialStatus != "" {
+		t.Errorf("Get = %+v, %v", got, err)
+	}
+}
+
 func TestI_SaveWritesTenantFailureAndEveryStepAndGetReadsThemBack(t *testing.T) {
 	s, _ := newStore(t)
 	sg := fresh(1, "key-onboard-0001", t0)
