@@ -53,9 +53,8 @@ func (o *OnboardTenant) Get(ctx context.Context, id string) (saga.Saga, error) {
 // Resume closes the RUNNING sagas that have not advanced since before. The password is gone after a
 // restart, so a saga that never created the account is compensated, never resumed.
 //
-// Declared debt (owner: Project Lead):
-//   - F3: there is no claim or lock, so two instances, or one live slow saga, could be compensated by
-//     mistake. The demo runs ONE instance; the fix is a store Claim plus a compare-and-swap Save.
+// The stale sagas are claimed first, so only one actor takes each; a saga another actor moved meanwhile is left to
+// that actor, and one that ended meanwhile is done (neither saga.ErrConflict nor saga.ErrEnded is a failure of the resume).
 func (o *OnboardTenant) Resume(ctx context.Context, before time.Time) error {
 	stale, err := o.store.ClaimStale(ctx, before, o.now())
 	if err != nil {
@@ -63,7 +62,12 @@ func (o *OnboardTenant) Resume(ctx context.Context, before time.Time) error {
 	}
 	var failures []error
 	for i := range stale {
-		if err := o.closeStale(ctx, &stale[i]); err != nil {
+		err := o.closeStale(ctx, &stale[i])
+		if errors.Is(err, saga.ErrConflict) || errors.Is(err, saga.ErrEnded) {
+			o.log.Info("saga moved or ended by another actor, left to it", "sagaId", stale[i].ID)
+			continue
+		}
+		if err != nil {
 			failures = append(failures, err)
 		}
 	}

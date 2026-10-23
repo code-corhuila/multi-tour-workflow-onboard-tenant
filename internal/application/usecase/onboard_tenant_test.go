@@ -26,6 +26,7 @@ type fakeStore struct {
 	snapshots  []saga.Saga
 	saves      int
 	conflictAt int // the save with this number (from 1) answers ErrConflict; 0 never does
+	endedAt    int // the save with this number answers ErrEnded: the saga ended meanwhile
 }
 
 func newStore() *fakeStore { return &fakeStore{byID: map[string]saga.Saga{}} }
@@ -60,6 +61,9 @@ func (f *fakeStore) Save(ctx context.Context, s *saga.Saga) error {
 		return err
 	}
 	f.saves++
+	if f.saves == f.endedAt {
+		return saga.ErrEnded
+	}
 	if f.saves == f.conflictAt || f.byID[s.ID].Version != s.Version {
 		return saga.ErrConflict
 	}
@@ -485,6 +489,15 @@ func TestA_resume_skips_a_saga_another_instance_took(t *testing.T) {
 	}
 	if s, _ := h.store.Get(context.Background(), "saga-9"); s.Status != saga.Running {
 		t.Errorf("status %s: the loser must leave the saga to the one that took it", s.Status)
+	}
+}
+
+func TestA_resume_skips_a_saga_that_ended_between_the_claim_and_the_save(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	h.store.endedAt = 1
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v, a saga that ended on its own is not a failure of the resume", err)
 	}
 }
 
