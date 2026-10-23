@@ -81,6 +81,9 @@ type Saga struct {
 	IdempotencyKey string
 	Status         Status
 	TenantID       string
+	OnBehalfOf     string // the `sub` of the Platform Administrator, kept so a resume can act for them
+	MembershipID   string // returned by step 2, needed by step 3
+	InitialStatus  string // ACTIVE or INACTIVE, applied by step 3
 	Steps          []StepState
 	FailedStep     Step
 	FailureDetail  string // sanitized code and message only
