@@ -16,3 +16,20 @@ databaseChangeLog:
             relativeToChangelogFile: true
             splitStatements: false
             stripComments: false
+  - changeSet:
+      id: onboard-tenant-ddl-alter-002
+      author: Molina211
+      labels: "HU-WFL-001,ddl,alter"
+      comment: "What a restart needs to finish step 3 and to compensate: who asked, the membership id and the initial status (debt F2)."
+      changes:
+        - sqlFile:
+            path: 002_add_saga_resume_data.sql
+            relativeToChangelogFile: true
+            splitStatements: false
+            stripComments: false
+      rollback:
+        - sqlFile:
+            path: ../../05_rollbacks/01_ddl/04_alter/002_add_saga_resume_data.rollback.sql
+            relativeToChangelogFile: true
+            splitStatements: false
+            stripComments: false

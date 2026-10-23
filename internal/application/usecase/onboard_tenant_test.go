@@ -86,6 +86,7 @@ type fakeIdentity struct {
 	registerErr, completeErr, undo error
 	failedStep                     saga.Step
 	atComplete                     saga.Saga
+	completeArgs                   [3]string // tenant id, membership id, initial status
 }
 
 func (f *fakeIdentity) RegisterPendingTenant(ctx context.Context, c out.Call, _ saga.TenantData) (string, error) {
@@ -97,13 +98,14 @@ func (f *fakeIdentity) RegisterPendingTenant(ctx context.Context, c out.Call, _ 
 	return "tenant-1", f.registerErr
 }
 
-func (f *fakeIdentity) CompleteOnboarding(ctx context.Context, c out.Call, _, _, _ string) error {
+func (f *fakeIdentity) CompleteOnboarding(ctx context.Context, c out.Call, tenantID, membershipID, initialStatus string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	*f.order = append(*f.order, "complete")
 	f.calls = append(f.calls, c)
 	f.atComplete = f.store.latest()
+	f.completeArgs = [3]string{tenantID, membershipID, initialStatus}
 	return f.completeErr
 }
 
@@ -296,6 +298,13 @@ func TestI_state_is_saved_after_each_step(t *testing.T) {
 	if last := h.store.latest(); last.Status != saga.Completed || len(last.Steps) != 3 {
 		t.Errorf("final state = %+v", last)
 	}
+	// RN-WFL-10: what a resume needs is kept as the saga goes, never the password.
+	if got := h.security.atCall; got.OnBehalfOf != "platform-admin-sub" || got.InitialStatus != "ACTIVE" {
+		t.Errorf("before step 2 the store held on behalf of %q, initial status %q", got.OnBehalfOf, got.InitialStatus)
+	}
+	if got := h.identity.atComplete; got.MembershipID != "membership-1" {
+		t.Errorf("before step 3 the store held membership id %q", got.MembershipID)
+	}
 }
 
 func TestI_password_never_reaches_state_or_logs(t *testing.T) {
@@ -402,15 +411,59 @@ func TestA_resume_of_a_saga_with_step_three_done_completes_it(t *testing.T) {
 	}
 }
 
-func TestA_resume_of_a_saga_with_step_two_done_ends_failed(t *testing.T) {
+func TestA_resume_of_a_saga_with_step_two_done_finishes_step_three(t *testing.T) {
 	h := newHarness()
 	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
 	if err := h.uc.Resume(context.Background(), t0); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	s, _ := h.store.Get(context.Background(), "saga-9")
+	if s.Status != saga.Completed || !reflect.DeepEqual(*h.order, []string{"complete"}) {
+		t.Fatalf("saga %+v, calls %v", s, *h.order)
+	}
+	if got, want := h.identity.completeArgs, [3]string{"tenant-9", "membership-9", "INACTIVE"}; got != want {
+		t.Errorf("step 3 got %v, want the saved data %v", got, want)
+	}
+	if got := h.identity.calls[0]; got.OnBehalfOf != "platform-admin-sub" || got.Key != "saga-9:RECORD_ADMINISTRATOR" {
+		t.Errorf("step 3 call = %+v", got)
+	}
+}
+
+func TestA_resume_with_step_three_failing_ends_failed_for_a_person_without_undoing_anything(t *testing.T) {
+	h := newHarness()
+	h.identity.completeErr = unknown()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	s, _ := h.store.Get(context.Background(), "saga-9")
+	if s.Status != saga.Failed || s.FailedStep != saga.RecordAdministrator || !reflect.DeepEqual(*h.order, []string{"complete"}) {
+		t.Errorf("saga %+v, calls %v: the account exists, nothing may be undone", s, *h.order)
+	}
+}
+
+func TestA_resume_of_a_legacy_saga_without_saved_data_ends_failed(t *testing.T) {
+	h := newHarness()
+	legacy := staleSaga(saga.CreateTenant, saga.CreateAdministrator)
+	legacy.OnBehalfOf, legacy.MembershipID, legacy.InitialStatus = "", "", ""
+	h.store.put(legacy)
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	s, _ := h.store.Get(context.Background(), "saga-9")
 	if s.Status != saga.Failed || s.FailedStep != saga.RecordAdministrator || !strings.HasPrefix(s.FailureDetail, "RESTARTED") || len(*h.order) != 0 {
 		t.Errorf("saga %+v, calls %v", s, *h.order)
+	}
+}
+
+func TestA_resume_compensates_on_behalf_of_the_saved_platform_administrator(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant))
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(h.identity.calls) != 1 || h.identity.calls[0].OnBehalfOf != "platform-admin-sub" {
+		t.Errorf("compensation calls = %+v, want one on behalf of the saved administrator", h.identity.calls)
 	}
 }
 
@@ -442,6 +495,7 @@ func TestA_rerun_skips_steps_already_compensated(t *testing.T) {
 
 func staleSaga(done ...saga.Step) saga.Saga {
 	s := saga.Saga{ID: "saga-9", IdempotencyKey: "key-00000009", Status: saga.Running, TenantID: "tenant-9",
+		OnBehalfOf: "platform-admin-sub", MembershipID: "membership-9", InitialStatus: "INACTIVE",
 		CreatedAt: t0.Add(-time.Hour), UpdatedAt: t0.Add(-time.Hour)}
 	for _, step := range done {
 		s.Record(step)
