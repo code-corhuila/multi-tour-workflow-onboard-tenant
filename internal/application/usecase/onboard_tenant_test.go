@@ -22,8 +22,11 @@ const password = "Tmp-Secret-72h!"
 var t0 = time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 
 type fakeStore struct {
-	byID      map[string]saga.Saga
-	snapshots []saga.Saga
+	byID       map[string]saga.Saga
+	snapshots  []saga.Saga
+	saves      int
+	conflictAt int // the save with this number (from 1) answers ErrConflict; 0 never does
+	endedAt    int // the save with this number answers ErrEnded: the saga ended meanwhile
 }
 
 func newStore() *fakeStore { return &fakeStore{byID: map[string]saga.Saga{}} }
@@ -53,11 +56,19 @@ func (f *fakeStore) Create(ctx context.Context, s saga.Saga) (saga.Saga, bool, e
 	return copySaga(s), true, nil
 }
 
-func (f *fakeStore) Save(ctx context.Context, s saga.Saga) error {
+func (f *fakeStore) Save(ctx context.Context, s *saga.Saga) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f.put(s)
+	f.saves++
+	if f.saves == f.endedAt {
+		return saga.ErrEnded
+	}
+	if f.saves == f.conflictAt || f.byID[s.ID].Version != s.Version {
+		return saga.ErrConflict
+	}
+	s.Version++
+	f.put(*s)
 	return nil
 }
 
@@ -69,10 +80,12 @@ func (f *fakeStore) Get(_ context.Context, id string) (saga.Saga, error) {
 	return copySaga(s), nil
 }
 
-func (f *fakeStore) ListStale(_ context.Context, before time.Time) ([]saga.Saga, error) {
+func (f *fakeStore) ClaimStale(_ context.Context, before, now time.Time) ([]saga.Saga, error) {
 	var stale []saga.Saga
-	for _, s := range f.byID {
+	for id, s := range f.byID {
 		if s.Status == saga.Running && s.UpdatedAt.Before(before) {
+			s.UpdatedAt, s.Version = now, s.Version+1
+			f.byID[id] = copySaga(s)
 			stale = append(stale, copySaga(s))
 		}
 	}
@@ -464,6 +477,39 @@ func TestA_resume_compensates_on_behalf_of_the_saved_platform_administrator(t *t
 	}
 	if len(h.identity.calls) != 1 || h.identity.calls[0].OnBehalfOf != "platform-admin-sub" {
 		t.Errorf("compensation calls = %+v, want one on behalf of the saved administrator", h.identity.calls)
+	}
+}
+
+func TestA_resume_skips_a_saga_another_instance_took(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	h.store.conflictAt = 1 // between the claim and the save, someone else moved the saga
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v, a lost race is not a failure of the resume", err)
+	}
+	if s, _ := h.store.Get(context.Background(), "saga-9"); s.Status != saga.Running {
+		t.Errorf("status %s: the loser must leave the saga to the one that took it", s.Status)
+	}
+}
+
+func TestA_resume_skips_a_saga_that_ended_between_the_claim_and_the_save(t *testing.T) {
+	h := newHarness()
+	h.store.put(staleSaga(saga.CreateTenant, saga.CreateAdministrator))
+	h.store.endedAt = 1
+	if err := h.uc.Resume(context.Background(), t0); err != nil {
+		t.Fatalf("Resume: %v, a saga that ended on its own is not a failure of the resume", err)
+	}
+}
+
+func TestA_live_saga_stops_when_the_resume_took_it(t *testing.T) {
+	h := newHarness()
+	h.store.conflictAt = 1 // the save after step 1
+	_, _, err := h.uc.Start(context.Background(), command("key-00000001"))
+	if !errors.Is(err, saga.ErrConflict) {
+		t.Fatalf("Start = %v, want ErrConflict", err)
+	}
+	if got, want := *h.order, []string{"register"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %v, want %v: a stopped saga neither goes on nor compensates", got, want)
 	}
 }
 

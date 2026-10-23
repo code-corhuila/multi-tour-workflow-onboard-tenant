@@ -27,7 +27,7 @@ const (
 
 	sagaColumns = `saga_id::text, idempotency_key, saga_status, coalesce(tenant_id::text, ''),
 		coalesce(failed_step, ''), coalesce(failure_detail, ''), created_at, updated_at,
-		coalesce(on_behalf_of, ''), coalesce(membership_id::text, ''), coalesce(initial_status, '')`
+		coalesce(on_behalf_of, ''), coalesce(membership_id::text, ''), coalesce(initial_status, ''), version`
 )
 
 var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -53,9 +53,10 @@ func (s *Store) Create(ctx context.Context, sg saga.Saga) (saga.Saga, bool, erro
 	return existing[0], false, nil
 }
 
-// Save writes the status, tenant, failure and steps in one transaction. Only a RUNNING saga is written (compare and
-// swap on the status): a saga that ended is never overwritten and Save answers saga.ErrEnded.
-func (s *Store) Save(ctx context.Context, sg saga.Saga) error {
+// Save writes the status, tenant, failure and steps in one transaction. Only a RUNNING saga is written, and only from
+// the copy that is still the stored one (compare and swap on the version): a saga that ended is never overwritten
+// (saga.ErrEnded) and one moved by another actor is refused (saga.ErrConflict).
+func (s *Store) Save(ctx context.Context, sg *saga.Saga) error {
 	if !uuidShape.MatchString(sg.ID) {
 		return saga.ErrNotFound
 	}
@@ -67,21 +68,24 @@ func (s *Store) Save(ctx context.Context, sg saga.Saga) error {
 
 	tag, err := tx.Exec(ctx, `UPDATE `+sagaTable+` SET saga_status = $2, tenant_id = nullif($3::text, '')::uuid,
 		failed_step = nullif($4::text, ''), failure_detail = nullif($5::text, ''), updated_at = $6,
-		membership_id = nullif($7::text, '')::uuid
-		WHERE saga_id = $1::text::uuid AND saga_status = 'RUNNING'`,
-		sg.ID, string(sg.Status), sg.TenantID, string(sg.FailedStep), sg.FailureDetail, sg.UpdatedAt, sg.MembershipID)
+		membership_id = nullif($7::text, '')::uuid, version = version + 1
+		WHERE saga_id = $1::text::uuid AND saga_status = 'RUNNING' AND version = $8`,
+		sg.ID, string(sg.Status), sg.TenantID, string(sg.FailedStep), sg.FailureDetail, sg.UpdatedAt, sg.MembershipID, sg.Version)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+sagaTable+` WHERE saga_id = $1::text::uuid)`, sg.ID).Scan(&exists); err != nil {
+		var status string
+		err := tx.QueryRow(ctx, `SELECT saga_status FROM `+sagaTable+` WHERE saga_id = $1::text::uuid`, sg.ID).Scan(&status)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return saga.ErrNotFound
+		case err != nil:
 			return err
-		}
-		if exists {
+		case status != string(saga.Running):
 			return saga.ErrEnded
 		}
-		return saga.ErrNotFound
+		return saga.ErrConflict
 	}
 	batch := &pgx.Batch{}
 	for i, st := range sg.Steps {
@@ -100,7 +104,11 @@ func (s *Store) Save(ctx context.Context, sg saga.Saga) error {
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	sg.Version++
+	return nil
 }
 
 func (s *Store) Get(ctx context.Context, id string) (saga.Saga, error) {
@@ -117,9 +125,22 @@ func (s *Store) Get(ctx context.Context, id string) (saga.Saga, error) {
 	return found[0], nil
 }
 
-// ListStale returns the RUNNING sagas whose updated_at is before the cutoff, oldest first, with their steps.
-func (s *Store) ListStale(ctx context.Context, before time.Time) ([]saga.Saga, error) {
-	return s.load(ctx, `WHERE saga_status = 'RUNNING' AND updated_at < $1 ORDER BY updated_at, saga_id`, before)
+// ClaimStale takes the RUNNING sagas whose updated_at is before the cutoff in one statement: it stamps them with now and
+// raises their version, and rows another caller holds locked are skipped, so two callers never take the same saga.
+func (s *Store) ClaimStale(ctx context.Context, before, now time.Time) ([]saga.Saga, error) {
+	rows, err := s.pool.Query(ctx, `WITH picked AS (
+			SELECT saga_id FROM `+sagaTable+` WHERE saga_status = 'RUNNING' AND updated_at < $1
+			ORDER BY updated_at, saga_id FOR UPDATE SKIP LOCKED)
+		UPDATE `+sagaTable+` t SET updated_at = $2, version = t.version + 1
+		FROM picked WHERE t.saga_id = picked.saga_id RETURNING t.saga_id::text`, before, now)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	return s.load(ctx, `WHERE saga_id IN (SELECT unnest($1::text[])::uuid) ORDER BY updated_at, saga_id`, ids)
 }
 
 // load reads the sagas the WHERE clause selects and then their steps in step order.
@@ -132,7 +153,7 @@ func (s *Store) load(ctx context.Context, where string, args ...any) ([]saga.Sag
 		var sg saga.Saga
 		var status, failed string
 		err := r.Scan(&sg.ID, &sg.IdempotencyKey, &status, &sg.TenantID, &failed, &sg.FailureDetail, &sg.CreatedAt, &sg.UpdatedAt,
-			&sg.OnBehalfOf, &sg.MembershipID, &sg.InitialStatus)
+			&sg.OnBehalfOf, &sg.MembershipID, &sg.InitialStatus, &sg.Version)
 		sg.Status, sg.FailedStep = saga.Status(status), saga.Step(failed)
 		return sg, err
 	})

@@ -23,7 +23,7 @@ In PostgreSQL, schema `workflow_onboard_tenant` of the single instance (ADR-005 
 
 ## What is missing
 
-Declared debts: `OnBehalfOf` and the membership id are not persisted, so a resumed saga cannot finish step 3 and ends FAILED for a person; there is no claim on resume, so only one instance may run; the audit actor of the participant calls is the service, because the participant contracts have no field for the person. Not verified end to end against the real participants yet.
+Declared debts: the audit actor of the participant calls is the service, because the participant contracts have no field for the person. Not verified end to end against the real participants yet.
 
 ## Branching
 
