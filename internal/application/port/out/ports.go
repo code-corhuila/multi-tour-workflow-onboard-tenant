@@ -32,8 +32,11 @@ type Security interface {
 // with created=false.
 type Store interface {
 	Create(ctx context.Context, s saga.Saga) (stored saga.Saga, created bool, err error)
-	Save(ctx context.Context, s saga.Saga) error
+	// Save writes the saga if it is still the stored copy (same Version) and raises s.Version; otherwise it answers
+	// saga.ErrConflict (moved by another actor), saga.ErrEnded or saga.ErrNotFound.
+	Save(ctx context.Context, s *saga.Saga) error
 	Get(ctx context.Context, id string) (saga.Saga, error)
-	// ListStale returns RUNNING sagas not updated since before.
-	ListStale(ctx context.Context, before time.Time) ([]saga.Saga, error)
+	// ClaimStale takes the RUNNING sagas not updated since before: it stamps them with now and raises their Version in
+	// one step, so no other caller takes the same saga, and returns them as taken.
+	ClaimStale(ctx context.Context, before, now time.Time) ([]saga.Saga, error)
 }

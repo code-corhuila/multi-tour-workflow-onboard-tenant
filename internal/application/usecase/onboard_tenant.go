@@ -57,7 +57,7 @@ func (o *OnboardTenant) Get(ctx context.Context, id string) (saga.Saga, error) {
 //   - F3: there is no claim or lock, so two instances, or one live slow saga, could be compensated by
 //     mistake. The demo runs ONE instance; the fix is a store Claim plus a compare-and-swap Save.
 func (o *OnboardTenant) Resume(ctx context.Context, before time.Time) error {
-	stale, err := o.store.ListStale(ctx, before)
+	stale, err := o.store.ClaimStale(ctx, before, o.now())
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func (o *OnboardTenant) undo(ctx context.Context, s *saga.Saga, step, failed sag
 
 func (o *OnboardTenant) save(ctx context.Context, s *saga.Saga) error {
 	s.UpdatedAt = o.now()
-	return o.store.Save(ctx, *s)
+	return o.store.Save(ctx, s)
 }
 
 func (o *OnboardTenant) finish(ctx context.Context, s *saga.Saga) error {

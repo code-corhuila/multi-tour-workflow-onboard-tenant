@@ -55,7 +55,7 @@ func (s *Store) Create(ctx context.Context, sg saga.Saga) (saga.Saga, bool, erro
 
 // Save writes the status, tenant, failure and steps in one transaction. Only a RUNNING saga is written (compare and
 // swap on the status): a saga that ended is never overwritten and Save answers saga.ErrEnded.
-func (s *Store) Save(ctx context.Context, sg saga.Saga) error {
+func (s *Store) Save(ctx context.Context, sg *saga.Saga) error {
 	if !uuidShape.MatchString(sg.ID) {
 		return saga.ErrNotFound
 	}
@@ -117,8 +117,8 @@ func (s *Store) Get(ctx context.Context, id string) (saga.Saga, error) {
 	return found[0], nil
 }
 
-// ListStale returns the RUNNING sagas whose updated_at is before the cutoff, oldest first, with their steps.
-func (s *Store) ListStale(ctx context.Context, before time.Time) ([]saga.Saga, error) {
+// ClaimStale returns the RUNNING sagas whose updated_at is before the cutoff, oldest first, with their steps.
+func (s *Store) ClaimStale(ctx context.Context, before, _ time.Time) ([]saga.Saga, error) {
 	return s.load(ctx, `WHERE saga_status = 'RUNNING' AND updated_at < $1 ORDER BY updated_at, saga_id`, before)
 }
 
