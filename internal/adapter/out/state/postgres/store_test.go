@@ -125,7 +125,7 @@ func TestI_state_keeps_on_behalf_of_membership_and_initial_status_after_each_ste
 	sg.Record(saga.CreateTenant)
 	sg.Record(saga.CreateAdministrator)
 	sg.UpdatedAt = t0.Add(time.Second)
-	if err := s.Save(ctx, sg); err != nil {
+	if err := s.Save(ctx, &sg); err != nil {
 		t.Fatal(err)
 	}
 	got, err = s.Get(ctx, sg.ID)
@@ -153,7 +153,7 @@ func TestI_SaveWritesTenantFailureAndEveryStepAndGetReadsThemBack(t *testing.T) 
 	sg.TenantID = tid1
 	sg.Record(saga.CreateTenant)
 	sg.UpdatedAt = t0.Add(time.Second)
-	if err := s.Save(ctx, sg); err != nil {
+	if err := s.Save(ctx, &sg); err != nil {
 		t.Fatal(err)
 	}
 	mid, err := s.Get(ctx, sg.ID)
@@ -164,7 +164,7 @@ func TestI_SaveWritesTenantFailureAndEveryStepAndGetReadsThemBack(t *testing.T) 
 	sg.MarkCompensated(saga.CreateTenant)
 	sg.End(saga.Compensated, saga.CreateAdministrator, "REJECTED: the e-mail is taken")
 	sg.UpdatedAt = t0.Add(2 * time.Second)
-	if err := s.Save(ctx, sg); err != nil {
+	if err := s.Save(ctx, &sg); err != nil {
 		t.Fatal(err)
 	}
 	end, err := s.Get(ctx, sg.ID)
@@ -186,7 +186,7 @@ func TestI_SaveKeepsStepsInOrderWithoutDuplicates(t *testing.T) {
 	sg.Record(saga.CreateTenant)
 	sg.Record(saga.CreateAdministrator)
 	for range 2 {
-		if err := s.Save(ctx, sg); err != nil {
+		if err := s.Save(ctx, &sg); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -206,14 +206,14 @@ func TestI_SaveNeverOverwritesAnEndedSaga(t *testing.T) {
 	mustCreate(t, s, sg)
 	sg.Record(saga.CreateTenant)
 	sg.End(saga.Completed, "", "")
-	if err := s.Save(ctx, sg); err != nil {
+	if err := s.Save(ctx, &sg); err != nil {
 		t.Fatal(err)
 	}
 
 	late := sg
 	late.Steps = nil
 	late.End(saga.Failed, saga.CreateTenant, "RESTARTED: stopped before the tenant was recorded")
-	if err := s.Save(ctx, late); !errors.Is(err, saga.ErrEnded) {
+	if err := s.Save(ctx, &late); !errors.Is(err, saga.ErrEnded) {
 		t.Fatalf("Save over an ended saga = %v, want ErrEnded", err)
 	}
 	got, err := s.Get(ctx, sg.ID)
@@ -224,7 +224,8 @@ func TestI_SaveNeverOverwritesAnEndedSaga(t *testing.T) {
 
 func TestI_SaveOfAnUnknownSagaIsNotFound(t *testing.T) {
 	s, _ := newStore(t)
-	if err := s.Save(ctx, fresh(9, "key-onboard-0009", t0)); !errors.Is(err, saga.ErrNotFound) {
+	unknown := fresh(9, "key-onboard-0009", t0)
+	if err := s.Save(ctx, &unknown); !errors.Is(err, saga.ErrNotFound) {
 		t.Fatalf("Save = %v, want ErrNotFound", err)
 	}
 }
@@ -238,37 +239,87 @@ func TestI_GetOfAnUnknownOrMalformedIdIsNotFound(t *testing.T) {
 	}
 }
 
-func TestI_ListStaleReturnsOnlyRunningSagasOlderThanTheCutoffWithTheirSteps(t *testing.T) {
+func TestI_ClaimStaleReturnsOnlyRunningSagasOlderThanTheCutoffWithTheirSteps(t *testing.T) {
 	s, _ := newStore(t)
 	old := fresh(1, "key-onboard-0001", t0)
 	mustCreate(t, s, old)
 	old.Record(saga.CreateTenant)
 	old.UpdatedAt = t0
-	if err := s.Save(ctx, old); err != nil {
+	if err := s.Save(ctx, &old); err != nil {
 		t.Fatal(err)
 	}
 	mustCreate(t, s, fresh(2, "key-onboard-0002", t0.Add(10*time.Minute))) // running but recent
 	ended := fresh(3, "key-onboard-0003", t0)                              // old but ended
 	mustCreate(t, s, ended)
 	ended.End(saga.Failed, saga.CreateTenant, "x")
-	if err := s.Save(ctx, ended); err != nil {
+	if err := s.Save(ctx, &ended); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.ListStale(ctx, t0.Add(5*time.Minute))
+	got, err := s.ClaimStale(ctx, t0.Add(5*time.Minute), t0.Add(6*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].ID != sagaID(1) || len(got[0].Steps) != 1 || got[0].Steps[0].Name != saga.CreateTenant {
-		t.Fatalf("ListStale = %+v", got)
+		t.Fatalf("ClaimStale = %+v", got)
 	}
 }
 
-func TestI_ListStaleOfNothingIsEmptyWithoutError(t *testing.T) {
+func TestI_ClaimTakesAStaleSagaOnceUnderConcurrency(t *testing.T) {
 	s, _ := newStore(t)
-	got, err := s.ListStale(ctx, t0)
+	mustCreate(t, s, fresh(1, "key-onboard-0001", t0))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	taken := 0
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := s.ClaimStale(ctx, t0.Add(5*time.Minute), t0.Add(6*time.Minute))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			taken += len(got)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if taken != 1 {
+		t.Fatalf("the saga was taken %d times, want once", taken)
+	}
+	got, err := s.Get(ctx, sagaID(1))
+	if err != nil || !got.UpdatedAt.Equal(t0.Add(6*time.Minute)) || got.Version != 1 {
+		t.Errorf("after the claim: %+v, %v (updated_at moved to the claim, version raised)", got, err)
+	}
+}
+
+func TestI_SaveFromAStaleCopyIsRefused(t *testing.T) {
+	s, _ := newStore(t)
+	mustCreate(t, s, fresh(1, "key-onboard-0001", t0))
+	live, _ := s.Get(ctx, sagaID(1))
+	resumed, _ := s.Get(ctx, sagaID(1))
+
+	resumed.Record(saga.CreateTenant)
+	if err := s.Save(ctx, &resumed); err != nil || resumed.Version != 1 {
+		t.Fatalf("first save = %v, version %d", err, resumed.Version)
+	}
+	live.End(saga.Failed, saga.CreateTenant, "late")
+	if err := s.Save(ctx, &live); !errors.Is(err, saga.ErrConflict) {
+		t.Fatalf("save from the older copy = %v, want ErrConflict", err)
+	}
+	got, _ := s.Get(ctx, sagaID(1))
+	if got.Status != saga.Running || len(got.Steps) != 1 {
+		t.Errorf("the older copy overwrote the newer: %+v", got)
+	}
+}
+
+func TestI_ClaimStaleOfNothingIsEmptyWithoutError(t *testing.T) {
+	s, _ := newStore(t)
+	got, err := s.ClaimStale(ctx, t0, t0)
 	if err != nil || len(got) != 0 {
-		t.Fatalf("ListStale = %+v, %v", got, err)
+		t.Fatalf("ClaimStale = %+v, %v", got, err)
 	}
 }
 
@@ -288,7 +339,7 @@ func TestI_TheAppRoleRunsTheStoreButCannotDeleteOrCreate(t *testing.T) {
 	sg := fresh(1, "key-onboard-0001", t0)
 	mustCreate(t, s, sg)
 	sg.Record(saga.CreateTenant)
-	if err := s.Save(ctx, sg); err != nil {
+	if err := s.Save(ctx, &sg); err != nil {
 		t.Fatalf("Save as the app role: %v", err)
 	}
 	if got, err := s.Get(ctx, sg.ID); err != nil || len(got.Steps) != 1 {

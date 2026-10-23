@@ -28,6 +28,10 @@ const (
 // ErrNotFound is returned by a store when no saga has the requested id.
 var ErrNotFound = errors.New("saga not found")
 
+// ErrConflict is returned by a store when a saga is saved from a copy that is no longer the stored one: another
+// actor (a resume, a live run) moved it first, and the one that lost must stop.
+var ErrConflict = errors.New("saga was changed by another actor")
+
 // ErrEnded is returned by a store when a saga that already ended is saved again: an ended saga never changes.
 var ErrEnded = errors.New("saga already ended")
 
@@ -84,6 +88,7 @@ type Saga struct {
 	OnBehalfOf     string // the `sub` of the Platform Administrator, kept so a resume can act for them
 	MembershipID   string // returned by step 2, needed by step 3
 	InitialStatus  string // ACTIVE or INACTIVE, applied by step 3
+	Version        int64  // counted by the store at every save and claim; a save from an older copy is refused
 	Steps          []StepState
 	FailedStep     Step
 	FailureDetail  string // sanitized code and message only
