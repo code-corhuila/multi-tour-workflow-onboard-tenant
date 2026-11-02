@@ -37,7 +37,8 @@ func (o *OnboardTenant) Start(ctx context.Context, cmd in.StartCommand) (saga.Sa
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.bound)
 	defer cancel()
 	now := o.now()
-	fresh := saga.Saga{ID: o.newID(), IdempotencyKey: cmd.IdempotencyKey, Status: saga.Running, CreatedAt: now, UpdatedAt: now}
+	fresh := saga.Saga{ID: o.newID(), IdempotencyKey: cmd.IdempotencyKey, Status: saga.Running, CreatedAt: now, UpdatedAt: now,
+		OnBehalfOf: cmd.Onboarding.OnBehalfOf, InitialStatus: cmd.Onboarding.Tenant.InitialStatus}
 	s, created, err := o.store.Create(ctx, fresh)
 	if err != nil || !created {
 		return s, false, err
@@ -52,19 +53,21 @@ func (o *OnboardTenant) Get(ctx context.Context, id string) (saga.Saga, error) {
 // Resume closes the RUNNING sagas that have not advanced since before. The password is gone after a
 // restart, so a saga that never created the account is compensated, never resumed.
 //
-// Declared debt (owner: Project Lead):
-//   - F2: OnBehalfOf, the membership id and the initial status are not persisted, so a resumed saga
-//     compensates with an empty OnBehalfOf and cannot finish step 3; it ends FAILED for a person.
-//   - F3: there is no claim or lock, so two instances, or one live slow saga, could be compensated by
-//     mistake. The demo runs ONE instance; the fix is a store Claim plus a compare-and-swap Save.
+// The stale sagas are claimed first, so only one actor takes each; a saga another actor moved meanwhile is left to
+// that actor, and one that ended meanwhile is done (neither saga.ErrConflict nor saga.ErrEnded is a failure of the resume).
 func (o *OnboardTenant) Resume(ctx context.Context, before time.Time) error {
-	stale, err := o.store.ListStale(ctx, before)
+	stale, err := o.store.ClaimStale(ctx, before, o.now())
 	if err != nil {
 		return err
 	}
 	var failures []error
 	for i := range stale {
-		if err := o.closeStale(ctx, &stale[i]); err != nil {
+		err := o.closeStale(ctx, &stale[i])
+		if errors.Is(err, saga.ErrConflict) || errors.Is(err, saga.ErrEnded) {
+			o.log.Info("saga moved or ended by another actor, left to it", "sagaId", stale[i].ID)
+			continue
+		}
+		if err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -76,8 +79,10 @@ func (o *OnboardTenant) closeStale(ctx context.Context, s *saga.Saga) error {
 	case s.Done(saga.RecordAdministrator):
 		s.End(saga.Completed, "", "")
 		return o.finish(ctx, s)
+	case s.Done(saga.CreateAdministrator) && s.MembershipID != "":
+		return o.finishStepThree(ctx, s)
 	case s.Done(saga.CreateAdministrator):
-		// The membership id needed by step 3 is not persisted (debt F2): a person must finish it.
+		// A saga stopped before the membership id was kept (it started before the migration): a person finishes it.
 		s.End(saga.Failed, saga.RecordAdministrator, "RESTARTED: stopped after the account was created")
 		return o.finish(ctx, s)
 	case !s.Done(saga.CreateTenant):
@@ -88,7 +93,18 @@ func (o *OnboardTenant) closeStale(ctx context.Context, s *saga.Saga) error {
 	// Known limit: the process may have stopped after step 2 answered and before its save, so the
 	// account could exist; compensating step 1 then leaves it pointing at a failed tenant.
 	cause := &saga.ParticipantError{Code: "RESTARTED", Message: "stopped before the account was created", Definitive: true}
-	return o.abort(ctx, s, saga.CreateAdministrator, cause, "")
+	return o.abort(ctx, s, saga.CreateAdministrator, cause, s.OnBehalfOf)
+}
+
+// finishStepThree runs step 3 of a resumed saga with the data kept by the earlier steps.
+func (o *OnboardTenant) finishStepThree(ctx context.Context, s *saga.Saga) error {
+	call := out.Call{Key: s.StepKey(saga.RecordAdministrator), OnBehalfOf: s.OnBehalfOf}
+	if err := o.identity.CompleteOnboarding(ctx, call, s.TenantID, s.MembershipID, s.InitialStatus); err != nil {
+		return o.abort(ctx, s, saga.RecordAdministrator, err, s.OnBehalfOf)
+	}
+	s.Record(saga.RecordAdministrator)
+	s.End(saga.Completed, "", "")
+	return o.finish(ctx, s)
 }
 
 // run executes the steps in order and saves the state after each one. Compensation of each step:
@@ -115,6 +131,7 @@ func (o *OnboardTenant) run(ctx context.Context, s *saga.Saga, req saga.Onboardi
 	if err != nil {
 		return o.abort(ctx, s, saga.CreateAdministrator, err, req.OnBehalfOf)
 	}
+	s.MembershipID = membershipID
 	if err := o.completed(ctx, s, saga.CreateAdministrator); err != nil {
 		return err
 	}
@@ -174,7 +191,7 @@ func (o *OnboardTenant) undo(ctx context.Context, s *saga.Saga, step, failed sag
 
 func (o *OnboardTenant) save(ctx context.Context, s *saga.Saga) error {
 	s.UpdatedAt = o.now()
-	return o.store.Save(ctx, *s)
+	return o.store.Save(ctx, s)
 }
 
 func (o *OnboardTenant) finish(ctx context.Context, s *saga.Saga) error {
