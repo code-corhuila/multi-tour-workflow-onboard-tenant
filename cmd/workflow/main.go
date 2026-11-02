@@ -59,16 +59,23 @@ func run(log *slog.Logger) error {
 	go func() { serving <- srv.ListenAndServe() }()
 	log.Info("workflow listening", "addr", cfg.listenAddr)
 
-	// One instance runs (declared debt F3): every saga still RUNNING at this moment was left by the previous process.
-	// It runs after the listener is up, so the health check answers while the participants are still being reached.
-	before := time.Now()
+	// A saga not moved for longer than the saga bound cannot be a live one (every save moves it), so it is claimed and
+	// closed; the sweep repeats every bound, so two instances never take the same saga. It runs after the listener is
+	// up, so the health check answers while the participants are still being reached.
 	resumed := make(chan struct{})
 	go func() {
 		defer close(resumed)
-		resumeCtx, cancel := context.WithTimeout(ctx, bound)
-		defer cancel()
-		if err := onboard.Resume(resumeCtx, before); err != nil {
-			log.Error("closing the sagas left running failed", "error", err.Error())
+		for {
+			resumeCtx, cancel := context.WithTimeout(ctx, bound)
+			if err := onboard.Resume(resumeCtx, time.Now().Add(-bound)); err != nil {
+				log.Error("closing the sagas left running failed", "error", err.Error())
+			}
+			cancel()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(bound):
+			}
 		}
 	}()
 
